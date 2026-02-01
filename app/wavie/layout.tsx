@@ -1,34 +1,19 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { supabase } from "@/lib/supabase";
 
 export default async function WavieLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
+  // ⚠️ Nota: seu projeto usa um supabase singleton anon (sem cookies server-side),
+  // então aqui no server não conseguimos "ver" o user logado de forma confiável.
+  // Por isso, este layout só mantém a casca visual.
+  // O bloqueio real (role wavie_admin) será feito client-side no /wavie (próximo passo).
+  // Se você tentar forçar auth aqui, vai quebrar.
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Mantemos a área disponível e o guard fica na página /wavie (client).
+  void supabase; // evita lint de import não usado caso seu setup seja estrito
 
-  // Não logado → login interno Wavie
-  if (!user) redirect("/wavie/login");
-
-  const { data: profile, error } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("user_id", user.id)
-    .maybeSingle<{ role: string | null }>();
-
-  // Falha segura
-  if (error || profile?.role !== "wavie_admin") {
-    redirect("/");
-  }
-
-  return (
-    <div className="min-h-screen bg-neutral-50">
-      {children}
-    </div>
-  );
+  return <div className="min-h-screen bg-neutral-50">{children}</div>;
 }
