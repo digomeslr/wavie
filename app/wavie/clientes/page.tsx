@@ -324,8 +324,11 @@ export default function WavieClientsPage() {
                   rows.map((c) => (
                     <tr key={c.id} className="hover:bg-neutral-50">
                       <td className="px-3 py-2 font-medium text-neutral-900">
-                        {c.name}
-                      </td>
+  <Link href={`/wavie/clientes/${c.id}`} className="hover:underline">
+    {c.name}
+  </Link>
+</td>
+
                       <td className="px-3 py-2 text-neutral-700">
                         {c.slug}
                       </td>
