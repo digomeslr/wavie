@@ -22,7 +22,7 @@ export function createClient() {
             cookieStore.set(name, value, options);
           });
         } catch {
-          // em alguns contextos (ex: Server Components) set pode falhar; ok.
+          // ok em alguns contextos
         }
       },
     },
