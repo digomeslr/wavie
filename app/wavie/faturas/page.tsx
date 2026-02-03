@@ -5,6 +5,19 @@ import { createClient } from "@/lib/supabase/server";
 import { createInvoicePayment } from "./actions";
 import RegisterPaymentModalClient from "./register-payment-modal-client";
 
+type InvoiceRow = {
+  id: string;
+  client_id: string | null;
+  month: string; // date (YYYY-MM-DD)
+  status: "open" | "sent" | "paid" | "void" | string;
+  orders_count: number | null;
+  gross_cents: number | null;
+  wavie_fee_cents: number | null;
+  created_at: string;
+  paid_at: string | null;
+  clients?: { id: string; name: string | null } | null;
+};
+
 type PaymentRow = {
   id: string;
   invoice_id: string;
@@ -41,11 +54,12 @@ function parseStatusParam(s?: string | null) {
   return "all";
 }
 
-async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
+async function assertWavieAdminOrRedirect(
+  supabase: Awaited<ReturnType<typeof createClient>>
+) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
   if (!user) redirect("/wavie/login");
 
   const { data: profile } = await supabase
@@ -57,66 +71,7 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
   if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
-type InvoiceSchema = {
-  monthCol: string | null;
-  statusCol: string | null;
-  amountDueCol: string | null;
-  paidAtCol: string | null;
-  createdAtCol: string | null;
-  clientIdCol: string | null;
-  commissionCol: string | null;
-  fixedFeeCol: string | null;
-};
-
-function hasOwn(o: any, k: string) {
-  return o && Object.prototype.hasOwnProperty.call(o, k);
-}
-
-/**
- * Detecta colunas reais a partir de 1 linha de invoices.
- * Se tabela estiver vazia, retorna tudo null (e a página não quebra).
- */
-async function detectInvoicesSchema(
-  supabase: Awaited<ReturnType<typeof createClient>>
-): Promise<InvoiceSchema> {
-  const { data: sample, error } = await supabase.from("invoices").select("*").limit(1).maybeSingle<any>();
-  if (error || !sample) {
-    return {
-      monthCol: null,
-      statusCol: null,
-      amountDueCol: null,
-      paidAtCol: null,
-      createdAtCol: null,
-      clientIdCol: null,
-      commissionCol: null,
-      fixedFeeCol: null,
-    };
-  }
-
-  const monthCandidates = ["period_month", "month", "billing_month", "ref_month", "billing_period"] as const;
-  const statusCandidates = ["status", "invoice_status"] as const;
-  const amountCandidates = ["amount_due_cents", "amount_cents", "total_cents", "due_cents", "value_cents"] as const;
-  const paidAtCandidates = ["paid_at", "paidAt", "paid_date"] as const;
-  const createdAtCandidates = ["created_at", "createdAt"] as const;
-  const clientIdCandidates = ["client_id", "customer_id"] as const;
-  const commissionCandidates = ["commission_cents", "commission_amount_cents"] as const;
-  const fixedFeeCandidates = ["fixed_fee_cents", "fee_cents", "fixed_cents"] as const;
-
-  const pick = (arr: readonly string[]) => arr.find((c) => hasOwn(sample, c)) ?? null;
-
-  return {
-    monthCol: pick(monthCandidates),
-    statusCol: pick(statusCandidates),
-    amountDueCol: pick(amountCandidates),
-    paidAtCol: pick(paidAtCandidates),
-    createdAtCol: pick(createdAtCandidates),
-    clientIdCol: pick(clientIdCandidates),
-    commissionCol: pick(commissionCandidates),
-    fixedFeeCol: pick(fixedFeeCandidates),
-  };
-}
-
-/** RPC mensal (B14) */
+/** RPC mensal */
 async function generateInvoiceForMonth(formData: FormData) {
   "use server";
 
@@ -129,11 +84,12 @@ async function generateInvoiceForMonth(formData: FormData) {
   if (!client_slug) throw new Error("Slug do cliente é obrigatório");
   if (!/^\d{4}-\d{2}$/.test(month)) throw new Error("Mês inválido (use YYYY-MM)");
 
-  const period_month = firstDayOfMonthISO(month);
+  // invoices.month é DATE -> passamos YYYY-MM-01
+  const month_date = firstDayOfMonthISO(month);
 
   const { error } = await supabase.rpc("generate_invoice_for_month", {
     p_client_slug: client_slug,
-    p_period_month: period_month,
+    p_period_month: month_date,
   });
 
   if (error) throw new Error(error.message);
@@ -151,44 +107,37 @@ export default async function WavieFaturasPage({
 
   const month = parseMonthParam(searchParams?.month);
   const status = parseStatusParam(searchParams?.status);
-  const periodMonthISO = firstDayOfMonthISO(month);
 
-  const schema = await detectInvoicesSchema(supabase);
+  // invoices.month é DATE (YYYY-MM-01)
+  const month_date = firstDayOfMonthISO(month);
 
-  // Monta select só com colunas que existem (evita "column does not exist")
-  const invoiceSelectCols: string[] = ["id"];
-  if (schema.clientIdCol) invoiceSelectCols.push(schema.clientIdCol);
-  if (schema.monthCol) invoiceSelectCols.push(schema.monthCol);
-  if (schema.statusCol) invoiceSelectCols.push(schema.statusCol);
-  if (schema.amountDueCol) invoiceSelectCols.push(schema.amountDueCol);
-  if (schema.commissionCol) invoiceSelectCols.push(schema.commissionCol);
-  if (schema.fixedFeeCol) invoiceSelectCols.push(schema.fixedFeeCol);
-  if (schema.createdAtCol) invoiceSelectCols.push(schema.createdAtCol);
-  if (schema.paidAtCol) invoiceSelectCols.push(schema.paidAtCol);
+  // invoices do mês
+  let invQ = supabase
+    .from("invoices")
+    .select(
+      [
+        "id",
+        "client_id",
+        "month",
+        "status",
+        "orders_count",
+        "gross_cents",
+        "wavie_fee_cents",
+        "created_at",
+        "paid_at",
+        "clients:clients(id,name)",
+      ].join(",")
+    )
+    .eq("month", month_date)
+    .order("created_at", { ascending: false });
 
-  // join cliente (se existir relacionamento clients)
-  // (se não existir, supabase vai ignorar? — melhor manter e se der erro, removemos depois)
-  invoiceSelectCols.push("clients:clients(id,name)");
-
-  const selectStr = invoiceSelectCols.join(",");
-
-  let invQ: any = supabase.from("invoices").select(selectStr);
-
-  // filtro por mês (só se existir coluna)
-  if (schema.monthCol) invQ = invQ.eq(schema.monthCol, periodMonthISO);
-
-  // filtro por status (só se existir coluna)
-  if (status !== "all" && schema.statusCol) invQ = invQ.eq(schema.statusCol, status);
-
-  // order por created_at se existir, senão por id
-  if (schema.createdAtCol) invQ = invQ.order(schema.createdAtCol, { ascending: false });
-  else invQ = invQ.order("id", { ascending: false });
+  if (status !== "all") invQ = invQ.eq("status", status);
 
   const { data: invoicesRaw, error: invErr } = await invQ;
   if (invErr) throw new Error(invErr.message);
 
-  const invoices = (invoicesRaw ?? []) as any[];
-  const invoiceIds = invoices.map((i) => i.id).filter(Boolean);
+  const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
+  const invoiceIds = invoices.map((i) => i.id);
 
   // pagamentos dessas invoices
   let payments: PaymentRow[] = [];
@@ -207,26 +156,18 @@ export default async function WavieFaturasPage({
   const paidByInvoice = new Map<string, number>();
   const countByInvoice = new Map<string, number>();
   for (const p of payments) {
-    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + (p.amount_cents ?? 0));
+    paidByInvoice.set(
+      p.invoice_id,
+      (paidByInvoice.get(p.invoice_id) ?? 0) + Number(p.amount_cents ?? 0)
+    );
     countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
   }
 
   const statuses = ["all", "open", "sent", "paid", "void"] as const;
 
-  const getNum = (row: any, col: string | null): number => {
-    if (!col) return 0;
-    const v = row?.[col];
-    return typeof v === "number" ? v : Number(v ?? 0) || 0;
-  };
-
-  const getStr = (row: any, col: string | null): string | null => {
-    if (!col) return null;
-    const v = row?.[col];
-    return v == null ? null : String(v);
-  };
-
   return (
     <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
+      {/* BUILD MARKER */}
       <div
         style={{
           padding: 12,
@@ -240,34 +181,27 @@ export default async function WavieFaturasPage({
         ✅ BUILD MARKER: B15.2 / Faturas em produção
       </div>
 
-      {/* Diagnóstico do schema detectado (não quebra prod) */}
+      {/* Schema info (fixo agora) */}
       <div
         style={{
           padding: 12,
           borderRadius: 14,
-          border: "1px solid rgba(0,0,0,0.15)",
+          border: "1px solid rgba(0,0,0,0.12)",
           background: "white",
           marginBottom: 12,
           fontSize: 13,
         }}
       >
-        <b>Schema detectado (invoices):</b>{" "}
-        <span style={{ opacity: 0.85 }}>
-          month=<code>{schema.monthCol ?? "—"}</code> • status=<code>{schema.statusCol ?? "—"}</code> • amount=
-          <code>{schema.amountDueCol ?? "—"}</code> • paid_at=<code>{schema.paidAtCol ?? "—"}</code> • created_at=
-          <code>{schema.createdAtCol ?? "—"}</code>
-        </span>
-        {!schema.amountDueCol ? (
-          <div style={{ marginTop: 6, opacity: 0.85 }}>
-            ⚠️ Não achei a coluna do <b>valor</b> da fatura. A lista vai abrir, mas os totais podem aparecer como R$ 0,00
-            até detectarmos o nome correto.
-          </div>
-        ) : null}
-        {!schema.monthCol ? (
-          <div style={{ marginTop: 6, opacity: 0.85 }}>
-            ⚠️ Não achei a coluna do <b>mês</b>. O filtro por mês fica desativado (lista tudo).
-          </div>
-        ) : null}
+        <div style={{ fontWeight: 800, marginBottom: 4 }}>
+          Schema (invoices) detectado:
+        </div>
+        <div style={{ opacity: 0.85 }}>
+          month=<b>month</b> · status=<b>status</b> · bruto=<b>gross_cents</b> ·
+          due=<b>wavie_fee_cents</b> · paid_at=<b>paid_at</b> · created_at=<b>created_at</b>
+        </div>
+        <div style={{ marginTop: 6, opacity: 0.75 }}>
+          * “Total (due)” = <b>wavie_fee_cents</b> (taxa Wavie). “Bruto” = <b>gross_cents</b> (informativo).
+        </div>
       </div>
 
       {/* Header */}
@@ -309,7 +243,7 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
-      {/* Gerar/Atualizar (B14) */}
+      {/* Gerar/Atualizar */}
       <div
         style={{
           padding: 14,
@@ -463,20 +397,16 @@ export default async function WavieFaturasPage({
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
             {invoices.map((inv) => {
-              const invId = String(inv.id);
-              const clientId = schema.clientIdCol ? String(inv?.[schema.clientIdCol] ?? "") : "";
-              const invStatus = getStr(inv, schema.statusCol) ?? "—";
+              const paid = paidByInvoice.get(inv.id) ?? 0;
+              const cnt = countByInvoice.get(inv.id) ?? 0;
 
-              const due = getNum(inv, schema.amountDueCol);
-              const paid = paidByInvoice.get(invId) ?? 0;
-              const cnt = countByInvoice.get(invId) ?? 0;
+              const gross = Number(inv.gross_cents ?? 0);
+              const due = Number(inv.wavie_fee_cents ?? 0); // ✅ valor a pagar
               const remaining = Math.max(due - paid, 0);
-
-              const paidAt = getStr(inv, schema.paidAtCol);
 
               return (
                 <div
-                  key={invId}
+                  key={inv.id}
                   style={{
                     padding: 14,
                     borderRadius: 16,
@@ -496,7 +426,7 @@ export default async function WavieFaturasPage({
                     <div style={{ minWidth: 260 }}>
                       <div style={{ fontSize: 14, opacity: 0.75 }}>Cliente</div>
                       <div style={{ fontSize: 16, fontWeight: 700 }}>
-                        {inv.clients?.name ?? clientId ?? "—"}
+                        {inv.clients?.name ?? inv.client_id ?? "—"}
                       </div>
 
                       <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -508,7 +438,7 @@ export default async function WavieFaturasPage({
                             border: "1px solid rgba(0,0,0,0.12)",
                           }}
                         >
-                          status: <b>{invStatus}</b>
+                          status: <b>{inv.status}</b>
                         </span>
                         <span
                           style={{
@@ -520,45 +450,66 @@ export default async function WavieFaturasPage({
                         >
                           pagamentos: <b>{cnt}</b>
                         </span>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                          }}
+                        >
+                          pedidos: <b>{inv.orders_count ?? 0}</b>
+                        </span>
                       </div>
                     </div>
 
                     <div style={{ flex: 1, minWidth: 260 }}>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                         <div>
+                          <div style={{ fontSize: 12, opacity: 0.75 }}>Bruto (informativo)</div>
+                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(gross)}</div>
+                        </div>
+
+                        <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Total (due)</div>
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
                         </div>
+
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Pago</div>
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(paid)}</div>
                         </div>
+
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Restante</div>
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(remaining)}</div>
                         </div>
+
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Pago em</div>
                           <div style={{ fontSize: 14 }}>
-                            {paidAt ? new Date(paidAt).toLocaleString("pt-BR") : "—"}
+                            {inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}
                           </div>
                         </div>
                       </div>
                     </div>
 
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <RegisterPaymentModal invoiceId={invId} defaultAmountCents={remaining > 0 ? remaining : due} />
+                      <RegisterPaymentModal
+                        invoiceId={inv.id}
+                        defaultAmountCents={remaining > 0 ? remaining : due}
+                      />
                     </div>
                   </div>
 
                   <div style={{ marginTop: 12 }}>
                     <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Pagamentos</div>
-                    {payments.filter((p) => p.invoice_id === invId).length === 0 ? (
+                    {payments.filter((p) => p.invoice_id === inv.id).length === 0 ? (
                       <div style={{ fontSize: 13, opacity: 0.7 }}>Nenhum pagamento registrado.</div>
                     ) : (
                       <div style={{ display: "grid", gap: 6 }}>
                         {payments
-                          .filter((p) => p.invoice_id === invId)
+                          .filter((p) => p.invoice_id === inv.id)
                           .slice(0, 6)
                           .map((p) => (
                             <div
@@ -576,7 +527,7 @@ export default async function WavieFaturasPage({
                             >
                               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                                 <span style={{ fontSize: 13 }}>
-                                  <b>{formatBRLFromCents(p.amount_cents)}</b>
+                                  <b>{formatBRLFromCents(Number(p.amount_cents ?? 0))}</b>
                                 </span>
                                 <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
                                 <span style={{ fontSize: 13, opacity: 0.8 }}>
