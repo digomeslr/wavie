@@ -17,7 +17,6 @@ type InvoiceRow = {
   status: InvoiceStatus;
   created_at: string;
   updated_at: string;
-  // join opcional (depende do relacionamento no Supabase)
   clients?: {
     name?: string | null;
     slug?: string | null;
@@ -31,13 +30,11 @@ function formatBRLFromCents(cents: number) {
 }
 
 function monthKeyFromDateString(dateStr: string) {
-  // dateStr esperado: YYYY-MM-DD
   if (!dateStr) return "";
   return dateStr.slice(0, 7); // YYYY-MM
 }
 
 function toMonthStartDate(monthKey: string) {
-  // monthKey: YYYY-MM
   if (!monthKey || monthKey.length !== 7) return null;
   return `${monthKey}-01`;
 }
@@ -55,7 +52,7 @@ export default function WavieInvoicesPage() {
   const [filterStatus, setFilterStatus] = useState<string>(""); // "" = todos
 
   // gerar fatura
-  const [genClientSlug, setGenClientSlug] = useState<string>("nelsaodrinks"); // default útil
+  const [genClientSlug, setGenClientSlug] = useState<string>("nelsaodrinks");
   const [genMonth, setGenMonth] = useState<string>(() => {
     const now = new Date();
     const y = now.getFullYear();
@@ -105,7 +102,6 @@ export default function WavieInvoicesPage() {
     setErr(null);
     setLoading(true);
 
-    // tenta trazer join com clients (se FK estiver configurada)
     const sel =
       "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,created_at,updated_at,clients(name,slug,service_type)";
 
@@ -125,7 +121,7 @@ export default function WavieInvoicesPage() {
     setLoading(false);
 
     if (error) {
-      // fallback sem join, se o relacionamento não estiver configurado
+      // fallback sem join
       const { data: data2, error: error2 } = await supabase
         .from("invoices")
         .select(
@@ -183,7 +179,6 @@ export default function WavieInvoicesPage() {
 
     setGenerating(true);
 
-    // achar client_id pelo slug
     const { data: client, error: cErr } = await supabase
       .from("clients")
       .select("id")
@@ -196,7 +191,6 @@ export default function WavieInvoicesPage() {
       return;
     }
 
-    // chamar RPC segura (só wavie_admin)
     const { data, error } = await supabase.rpc("generate_invoice_for_month", {
       p_client_id: client.id,
       p_month: monthStart,
@@ -314,9 +308,20 @@ export default function WavieInvoicesPage() {
       {/* Filtros + Lista */}
       <section className="mt-6 rounded-2xl border border-neutral-200 bg-white p-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">Lista de faturas</h2>
-            <p className="mt-1 text-xs text-neutral-500">Você pode filtrar por mês e status.</p>
+          <div className="flex items-start justify-between gap-4 w-full">
+            <div>
+              <h2 className="text-base font-semibold">Lista de faturas</h2>
+              <p className="mt-1 text-xs text-neutral-500">
+                Você pode filtrar por mês e status.
+              </p>
+            </div>
+
+            <button
+              onClick={exportCsv}
+              className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              Exportar CSV
+            </button>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -351,13 +356,6 @@ export default function WavieInvoicesPage() {
               className="h-10 self-end rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:border-neutral-900 disabled:opacity-60"
             >
               {loading ? "Atualizando…" : "Atualizar"}
-            </button>
-
-            <button
-              onClick={exportCsv}
-              className="h-10 self-end rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:opacity-90"
-            >
-              Exportar CSV
             </button>
           </div>
         </div>
