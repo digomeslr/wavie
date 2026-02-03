@@ -498,7 +498,6 @@ function RegisterPaymentModal({
   invoiceId: string;
   defaultAmountCents: number;
 }) {
-  // @ts-expect-error Server Action as prop
   return (
     <RegisterPaymentModalClient
       invoiceId={invoiceId}
