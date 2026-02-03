@@ -20,7 +20,7 @@ function toCentsBRL(input: string): number {
 }
 
 export async function createInvoicePayment(formData: FormData) {
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const {
     data: { user },
