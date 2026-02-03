@@ -20,6 +20,7 @@ function toCentsBRL(input: string): number {
 }
 
 export async function createInvoicePayment(formData: FormData) {
+  // createClient() é async no Next 16 (cookies async)
   const supabase = await createClient();
 
   const {
