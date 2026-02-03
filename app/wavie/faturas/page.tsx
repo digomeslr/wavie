@@ -1,570 +1,368 @@
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
-
-type InvoiceStatus = "open" | "sent" | "paid" | "void";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { createInvoicePayment } from "./actions";
 
 type InvoiceRow = {
   id: string;
-  client_id: string;
-  month: string; // YYYY-MM-DD
-  orders_count: number;
-  gross_cents: number;
-  wavie_fee_cents: number;
-  status: InvoiceStatus;
+  client_id: string | null;
+  period_month: string; // ex "2026-01-01" ou "2026-01" dependendo do seu schema
+  status: "open" | "sent" | "paid" | "void" | string;
+  amount_due_cents: number;
+  commission_cents: number | null;
+  fixed_fee_cents: number | null;
   created_at: string;
-  updated_at: string;
-  clients?: {
-    name?: string | null;
-    slug?: string | null;
-    service_type?: string | null;
-  } | null;
+  paid_at: string | null;
+  clients?: { id: string; name: string | null } | null;
+};
+
+type PaymentRow = {
+  id: string;
+  invoice_id: string;
+  amount_cents: number;
+  method: string;
+  paid_at: string;
+  reference: string | null;
+  notes: string | null;
 };
 
 function formatBRLFromCents(cents: number) {
-  const v = (Number(cents ?? 0) as number) / 100;
+  const v = (cents ?? 0) / 100;
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function monthKeyFromDateString(dateStr: string) {
-  if (!dateStr) return "";
-  return dateStr.slice(0, 7); // YYYY-MM
+function monthKey(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
 }
 
-function toMonthStartDate(monthKey: string) {
-  if (!monthKey || monthKey.length !== 7) return null;
-  return `${monthKey}-01`;
+function firstDayOfMonthISO(month: string) {
+  // month: "YYYY-MM" -> "YYYY-MM-01"
+  return `${month}-01`;
 }
 
-function csvEscape(val: any) {
-  const s = String(val ?? "");
-  return `"${s.replace(/"/g, '""')}"`;
+function parseMonthParam(s?: string | null) {
+  // aceita YYYY-MM; se vazio -> mês atual
+  if (s && /^\d{4}-\d{2}$/.test(s)) return s;
+  return monthKey(new Date());
 }
 
-export default function WavieInvoicesPage() {
-  const router = useRouter();
-  const [checking, setChecking] = useState(true);
+function parseStatusParam(s?: string | null) {
+  const allowed = new Set(["all", "open", "sent", "paid", "void"]);
+  if (s && allowed.has(s)) return s;
+  return "all";
+}
 
-  const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+async function assertWavieAdminOrRedirect(supabase: ReturnType<typeof createClient>) {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
-  // filtros
-  const [filterMonth, setFilterMonth] = useState<string>(""); // YYYY-MM
-  const [filterStatus, setFilterStatus] = useState<string>(""); // "" = todos
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("user_id", user.id)
+    .maybeSingle<{ role: string | null }>();
 
-  // gerar fatura
-  const [genClientSlug, setGenClientSlug] = useState<string>("nelsaodrinks");
-  const [genMonth, setGenMonth] = useState<string>(() => {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
-  });
-  const [generating, setGenerating] = useState(false);
-  const [genMsg, setGenMsg] = useState<string | null>(null);
+  if (!profile || profile.role !== "wavie_admin") redirect("/login");
+}
 
-  // export CSV
-  const [exporting, setExporting] = useState(false);
-  const [exportMsg, setExportMsg] = useState<string | null>(null);
+export default async function WavieFaturasPage({
+  searchParams,
+}: {
+  searchParams?: { month?: string; status?: string };
+}) {
+  const supabase = createClient();
+  await assertWavieAdminOrRedirect(supabase);
 
-  // Guard wavie_admin
-  useEffect(() => {
-    let alive = true;
+  const month = parseMonthParam(searchParams?.month);
+  const status = parseStatusParam(searchParams?.status);
+  const period_month = firstDayOfMonthISO(month);
 
-    (async () => {
-      const { data: userRes } = await supabase.auth.getUser();
-      const user = userRes?.user;
+  // 1) Carrega invoices do mês
+  let invQ = supabase
+    .from("invoices")
+    .select(
+      "id,client_id,period_month,status,amount_due_cents,commission_cents,fixed_fee_cents,created_at,paid_at, clients:clients(id,name)"
+    )
+    .eq("period_month", period_month)
+    .order("created_at", { ascending: false });
 
-      if (!alive) return;
+  if (status !== "all") invQ = invQ.eq("status", status);
 
-      if (!user) {
-        router.replace("/wavie/login");
-        return;
-      }
+  const { data: invoicesRaw, error: invErr } = await invQ;
+  if (invErr) throw new Error(invErr.message);
 
-      const { data: profile, error: profErr } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("user_id", user.id)
-        .maybeSingle<{ role: string | null }>();
+  const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
+  const invoiceIds = invoices.map((i) => i.id);
 
-      if (!alive) return;
+  // 2) Carrega pagamentos do mês (apenas das invoices carregadas)
+  let payments: PaymentRow[] = [];
+  if (invoiceIds.length > 0) {
+    const { data: pays, error: payErr } = await supabase
+      .from("invoice_payments")
+      .select("id,invoice_id,amount_cents,method,paid_at,reference,notes")
+      .in("invoice_id", invoiceIds)
+      .order("paid_at", { ascending: false });
 
-      if (profErr || profile?.role !== "wavie_admin") {
-        router.replace("/");
-        return;
-      }
-
-      setChecking(false);
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [router]);
-
-  async function load() {
-    setErr(null);
-    setLoading(true);
-
-    const sel =
-      "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,created_at,updated_at,clients(name,slug,service_type)";
-
-    let q = supabase
-      .from("invoices")
-      .select(sel)
-      .order("month", { ascending: false });
-
-    if (filterStatus) q = q.eq("status", filterStatus);
-    if (filterMonth) {
-      const ms = toMonthStartDate(filterMonth);
-      if (ms) q = q.eq("month", ms);
-    }
-
-    const { data, error } = await q;
-
-    setLoading(false);
-
-    if (error) {
-      // fallback sem join
-      const { data: data2, error: error2 } = await supabase
-        .from("invoices")
-        .select(
-          "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,created_at,updated_at"
-        )
-        .order("month", { ascending: false });
-
-      if (error2) {
-        setErr(error2.message);
-        setRows([]);
-        return;
-      }
-
-      setRows((data2 ?? []) as any);
-      return;
-    }
-
-    setRows((data ?? []) as any);
+    if (payErr) throw new Error(payErr.message);
+    payments = (pays ?? []) as any;
   }
 
-  useEffect(() => {
-    if (!checking) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checking]);
-
-  async function updateStatus(id: string, status: InvoiceStatus) {
-    setErr(null);
-
-    const { error } = await supabase.from("invoices").update({ status }).eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    await load();
+  // 3) Agrega pagos por invoice
+  const paidByInvoice = new Map<string, number>();
+  const countByInvoice = new Map<string, number>();
+  for (const p of payments) {
+    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + (p.amount_cents ?? 0));
+    countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
   }
 
-  const canGenerate = useMemo(() => {
-    return genClientSlug.trim().length >= 2 && genMonth.length === 7;
-  }, [genClientSlug, genMonth]);
-
-  async function generate() {
-    setGenMsg(null);
-    setErr(null);
-
-    if (!canGenerate) {
-      setGenMsg("Preencha um slug e um mês válido (YYYY-MM).");
-      return;
-    }
-
-    const monthStart = toMonthStartDate(genMonth);
-    if (!monthStart) {
-      setGenMsg("Mês inválido.");
-      return;
-    }
-
-    setGenerating(true);
-
-    const { data: client, error: cErr } = await supabase
-      .from("clients")
-      .select("id")
-      .eq("slug", genClientSlug.trim())
-      .maybeSingle<{ id: string }>();
-
-    if (cErr || !client?.id) {
-      setGenerating(false);
-      setGenMsg("Não achei esse cliente (slug). Confirme se existe em /wavie/clientes.");
-      return;
-    }
-
-    const { data, error } = await supabase.rpc("generate_invoice_for_month", {
-      p_client_id: client.id,
-      p_month: monthStart,
-    });
-
-    setGenerating(false);
-
-    if (error) {
-      setGenMsg(error.message);
-      return;
-    }
-
-    setGenMsg(
-      `OK! Invoice gerada/atualizada. status=${data?.status ?? "open"} • fee=${formatBRLFromCents(
-        Number(data?.wavie_fee_cents ?? 0)
-      )}`
-    );
-
-    await load();
-  }
-
-  async function exportCsv() {
-    setExportMsg(null);
-    setErr(null);
-    setExporting(true);
-
-    try {
-      // 1) tenta com join (se relacionamento existir)
-      const sel =
-        "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,clients(name,slug,service_type)";
-
-      let q = supabase
-        .from("invoices")
-        .select(sel)
-        .order("month", { ascending: false });
-
-      if (filterStatus) q = q.eq("status", filterStatus);
-      if (filterMonth) {
-        const ms = toMonthStartDate(filterMonth);
-        if (ms) q = q.eq("month", ms);
-      }
-
-      const { data, error } = await q;
-
-      let exportRows: any[] = data ?? [];
-
-      if (error) {
-        // 2) fallback: sem join + busca clients separadamente
-        const { data: inv2, error: invErr2 } = await supabase
-          .from("invoices")
-          .select("id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status")
-          .order("month", { ascending: false });
-
-        if (invErr2) throw new Error(invErr2.message);
-
-        let invFiltered = inv2 ?? [];
-
-        if (filterStatus) invFiltered = invFiltered.filter((r: any) => r.status === filterStatus);
-        if (filterMonth) {
-          const ms = toMonthStartDate(filterMonth);
-          if (ms) invFiltered = invFiltered.filter((r: any) => r.month === ms);
-        }
-
-        const clientIds = Array.from(new Set(invFiltered.map((r: any) => r.client_id))).filter(Boolean);
-
-        const { data: clientsData, error: cErr } = await supabase
-          .from("clients")
-          .select("id,name,slug,service_type")
-          .in("id", clientIds);
-
-        if (cErr) throw new Error(cErr.message);
-
-        const map = new Map<string, any>();
-        (clientsData ?? []).forEach((c: any) => map.set(c.id, c));
-
-        exportRows = invFiltered.map((r: any) => ({
-          ...r,
-          clients: map.get(r.client_id) ?? null,
-        }));
-      }
-
-      // 3) montar CSV
-      const header = [
-        "month",
-        "client_name",
-        "client_slug",
-        "service_type",
-        "orders_count",
-        "gross_brl",
-        "wavie_fee_brl",
-        "status",
-      ];
-
-      const lines = [header.join(",")];
-
-      for (const r of exportRows) {
-        const line = [
-          csvEscape(r.month),
-          csvEscape(r.clients?.name ?? ""),
-          csvEscape(r.clients?.slug ?? ""),
-          csvEscape(r.clients?.service_type ?? ""),
-          csvEscape(r.orders_count ?? 0),
-          csvEscape((Number(r.gross_cents ?? 0) / 100).toFixed(2)),
-          csvEscape((Number(r.wavie_fee_cents ?? 0) / 100).toFixed(2)),
-          csvEscape(r.status ?? ""),
-        ].join(",");
-
-        lines.push(line);
-      }
-
-      const csv = lines.join("\n") + "\n";
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-
-      const filename = `wavie-invoices-${filterMonth || "all"}${filterStatus ? `-${filterStatus}` : ""}.csv`;
-
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      URL.revokeObjectURL(url);
-
-      setExportMsg(`CSV gerado: ${filename}`);
-    } catch (e: any) {
-      setErr(e?.message ?? "Falha ao exportar CSV.");
-    } finally {
-      setExporting(false);
-    }
-  }
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    router.replace("/wavie/login");
-  }
-
-  if (checking) {
-    return (
-      <main className="min-h-screen bg-neutral-50 flex items-center justify-center p-6">
-        <div className="text-sm text-neutral-600">Verificando acesso…</div>
-      </main>
-    );
-  }
+  const statuses = ["all", "open", "sent", "paid", "void"] as const;
 
   return (
-    <main className="mx-auto max-w-6xl p-6">
-      <div className="flex items-start justify-between gap-4">
+    <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
         <div>
-          <h1 className="text-2xl font-semibold">Faturas</h1>
-          <p className="mt-1 text-sm text-neutral-600">
-            Gerar e acompanhar invoices por cliente/mês (somente Wavie Admin).
+          <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
+          <p style={{ margin: "6px 0 0", opacity: 0.75 }}>
+            Mês: <b>{month}</b> • Status: <b>{status}</b>
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {/* Filtro mês (inputs simples via querystring) */}
+          <form action="/wavie/faturas" method="get" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="hidden" name="status" value={status} />
+            <input
+              name="month"
+              defaultValue={month}
+              placeholder="YYYY-MM"
+              style={{
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(0,0,0,0.15)",
+                width: 110,
+              }}
+            />
+            <button
+              style={{
+                padding: "8px 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(0,0,0,0.15)",
+                background: "white",
+                cursor: "pointer",
+              }}
+            >
+              Filtrar
+            </button>
+          </form>
+
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {statuses.map((s) => (
+              <Link
+                key={s}
+                href={`/wavie/faturas?month=${encodeURIComponent(month)}&status=${encodeURIComponent(s)}`}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  textDecoration: "none",
+                  background: s === status ? "black" : "white",
+                  color: s === status ? "white" : "black",
+                  fontSize: 13,
+                }}
+              >
+                {s}
+              </Link>
+            ))}
+          </div>
+
+          {/* Mantém seu CSV (se já existir endpoint pronto). Ajuste href conforme seu projeto */}
           <Link
-            href="/wavie"
-            className="rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:border-neutral-900"
+            href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(
+              status
+            )}`}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid rgba(0,0,0,0.15)",
+              textDecoration: "none",
+              background: "white",
+              fontSize: 13,
+            }}
           >
-            Voltar
+            Exportar CSV
           </Link>
-          <button
-            onClick={handleLogout}
-            className="rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:border-neutral-900"
-          >
-            Sair
-          </button>
         </div>
       </div>
 
-      {/* Gerar invoice */}
-      <section className="mt-6 rounded-2xl border border-neutral-200 bg-white p-4">
-        <h2 className="text-base font-semibold">Gerar/atualizar fatura do mês</h2>
-        <p className="mt-1 text-xs text-neutral-500">
-          Usa a RPC <span className="font-mono">generate_invoice_for_month</span>. O cliente é encontrado pelo{" "}
-          <span className="font-mono">clients.slug</span>.
-        </p>
+      <div style={{ height: 16 }} />
 
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <div>
-            <label className="block text-xs font-medium text-neutral-700">Slug do cliente</label>
-            <input
-              className="mt-1 w-full rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
-              value={genClientSlug}
-              onChange={(e) => setGenClientSlug(e.target.value)}
-              placeholder="ex: nelsaodrinks"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-neutral-700">Mês</label>
-            <input
-              type="month"
-              className="mt-1 w-full rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
-              value={genMonth}
-              onChange={(e) => setGenMonth(e.target.value)}
-            />
-          </div>
-
-          <div className="flex items-end">
-            <button
-              onClick={generate}
-              disabled={!canGenerate || generating}
-              className="w-full rounded-xl bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-            >
-              {generating ? "Gerando…" : "Gerar/Atualizar"}
-            </button>
-          </div>
+      {invoices.length === 0 ? (
+        <div
+          style={{
+            padding: 14,
+            borderRadius: 14,
+            border: "1px solid rgba(0,0,0,0.12)",
+            background: "rgba(0,0,0,0.02)",
+          }}
+        >
+          Nenhuma fatura encontrada para este filtro.
         </div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {invoices.map((inv) => {
+            const paid = paidByInvoice.get(inv.id) ?? 0;
+            const cnt = countByInvoice.get(inv.id) ?? 0;
+            const due = inv.amount_due_cents ?? 0;
+            const remaining = Math.max(due - paid, 0);
 
-        {genMsg ? (
-          <div className="mt-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-800">
-            {genMsg}
-          </div>
-        ) : null}
-      </section>
-
-      {/* Filtros + Lista */}
-      <section className="mt-6 rounded-2xl border border-neutral-200 bg-white p-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div className="flex items-start justify-between gap-4 w-full">
-            <div>
-              <h2 className="text-base font-semibold">Lista de faturas</h2>
-              <p className="mt-1 text-xs text-neutral-500">Você pode filtrar por mês e status.</p>
-            </div>
-
-            <button
-              onClick={exportCsv}
-              disabled={exporting}
-              className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
-            >
-              {exporting ? "Exportando…" : "Exportar CSV"}
-            </button>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <div>
-              <label className="block text-xs font-medium text-neutral-700">Mês</label>
-              <input
-                type="month"
-                className="mt-1 w-44 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
-                value={filterMonth}
-                onChange={(e) => setFilterMonth(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-neutral-700">Status</label>
-              <select
-                className="mt-1 w-44 rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm"
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
+            return (
+              <div
+                key={inv.id}
+                style={{
+                  padding: 14,
+                  borderRadius: 16,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  background: "white",
+                }}
               >
-                <option value="">Todos</option>
-                <option value="open">open</option>
-                <option value="sent">sent</option>
-                <option value="paid">paid</option>
-                <option value="void">void</option>
-              </select>
-            </div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ minWidth: 260 }}>
+                    <div style={{ fontSize: 14, opacity: 0.75 }}>Cliente</div>
+                    <div style={{ fontSize: 16, fontWeight: 700 }}>
+                      {inv.clients?.name ?? inv.client_id ?? "—"}
+                    </div>
 
-            <button
-              onClick={load}
-              disabled={loading}
-              className="h-10 self-end rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:border-neutral-900 disabled:opacity-60"
-            >
-              {loading ? "Atualizando…" : "Atualizar"}
-            </button>
-          </div>
+                    <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          padding: "4px 8px",
+                          borderRadius: 999,
+                          border: "1px solid rgba(0,0,0,0.12)",
+                        }}
+                      >
+                        status: <b>{inv.status}</b>
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          padding: "4px 8px",
+                          borderRadius: 999,
+                          border: "1px solid rgba(0,0,0,0.12)",
+                        }}
+                      >
+                        pagamentos: <b>{cnt}</b>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ flex: 1, minWidth: 260 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>Total (due)</div>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>Pago</div>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(paid)}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>Restante</div>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(remaining)}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>Pago em</div>
+                        <div style={{ fontSize: 14 }}>{inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <RegisterPaymentModal
+                      invoiceId={inv.id}
+                      defaultAmountCents={remaining > 0 ? remaining : due}
+                      action={createInvoicePayment}
+                    />
+                  </div>
+                </div>
+
+                {/* Lista compacta de pagamentos (somente os desta invoice) */}
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Pagamentos</div>
+                  {payments.filter((p) => p.invoice_id === inv.id).length === 0 ? (
+                    <div style={{ fontSize: 13, opacity: 0.7 }}>Nenhum pagamento registrado.</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {payments
+                        .filter((p) => p.invoice_id === inv.id)
+                        .slice(0, 6)
+                        .map((p) => (
+                          <div
+                            key={p.id}
+                            style={{
+                              padding: "10px 10px",
+                              borderRadius: 12,
+                              border: "1px solid rgba(0,0,0,0.10)",
+                              background: "rgba(0,0,0,0.02)",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 10,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 13 }}>
+                                <b>{formatBRLFromCents(p.amount_cents)}</b>
+                              </span>
+                              <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
+                              <span style={{ fontSize: 13, opacity: 0.8 }}>
+                                • {new Date(p.paid_at).toLocaleString("pt-BR")}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 13, opacity: 0.75 }}>
+                              {p.reference ? <>ref: <b>{p.reference}</b></> : null}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
-
-        {exportMsg ? (
-          <div className="mt-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-800">
-            {exportMsg}
-          </div>
-        ) : null}
-
-        {err ? (
-          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {err}
-          </div>
-        ) : null}
-
-        <div className="mt-4 overflow-hidden rounded-xl border border-neutral-200">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-50 text-neutral-700">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Mês</th>
-                <th className="px-3 py-2 text-left font-medium">Cliente</th>
-                <th className="px-3 py-2 text-left font-medium">Pedidos</th>
-                <th className="px-3 py-2 text-left font-medium">Bruto</th>
-                <th className="px-3 py-2 text-left font-medium">Taxa Wavie</th>
-                <th className="px-3 py-2 text-left font-medium">Status</th>
-                <th className="px-3 py-2 text-right font-medium">Ações</th>
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-neutral-200">
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-3 py-10 text-center text-neutral-500">
-                    {loading ? "Carregando…" : "Nenhuma fatura encontrada."}
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => {
-                  const mk = monthKeyFromDateString(r.month);
-                  const clientName = r.clients?.name || r.client_id.slice(0, 8);
-                  const clientSlug = r.clients?.slug ? `(${r.clients.slug})` : "";
-
-                  return (
-                    <tr key={r.id} className="hover:bg-neutral-50">
-                      <td className="px-3 py-2 font-medium text-neutral-900">{mk}</td>
-                      <td className="px-3 py-2">
-                        <div className="font-medium text-neutral-900">{clientName}</div>
-                        <div className="text-xs text-neutral-500">
-                          {clientSlug} {r.clients?.service_type ? `• ${r.clients.service_type}` : ""}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-neutral-700">{r.orders_count}</td>
-                      <td className="px-3 py-2 text-neutral-700">{formatBRLFromCents(r.gross_cents)}</td>
-                      <td className="px-3 py-2 text-neutral-900 font-medium">
-                        {formatBRLFromCents(r.wavie_fee_cents)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className="inline-flex items-center rounded-full border border-neutral-300 bg-white px-2 py-0.5 text-xs">
-                          {r.status}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex justify-end gap-2">
-                          <button
-                            onClick={() => updateStatus(r.id, "sent")}
-                            className="rounded-xl border border-neutral-300 bg-white px-3 py-2 text-xs hover:border-neutral-900"
-                          >
-                            marcar sent
-                          </button>
-                          <button
-                            onClick={() => updateStatus(r.id, "paid")}
-                            className="rounded-xl bg-neutral-900 px-3 py-2 text-xs font-medium text-white"
-                          >
-                            marcar paid
-                          </button>
-                          <button
-                            onClick={() => updateStatus(r.id, "void")}
-                            className="rounded-xl border border-neutral-300 bg-white px-3 py-2 text-xs hover:border-neutral-900"
-                          >
-                            void
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <p className="mt-3 text-xs text-neutral-500">
-          Observação: a fatura congela os valores. Se novos pedidos entrarem no mês, gere/atualize novamente para refletir.
-        </p>
-      </section>
-    </main>
+      )}
+    </div>
   );
 }
+
+/**
+ * Client modal (inline) — mantém “página completa” em um arquivo só,
+ * sem criar component extra.
+ */
+function RegisterPaymentModal({
+  invoiceId,
+  defaultAmountCents,
+  action,
+}: {
+  invoiceId: string;
+  defaultAmountCents: number;
+  action: (formData: FormData) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  // @ts-expect-error — Server Action passed to client boundary via prop is supported in Next.js
+  return <RegisterPaymentModalClient invoiceId={invoiceId} defaultAmountCents={defaultAmountCents} action={action} />;
+}
+
+import RegisterPaymentModalClient from "./register-payment-modal-client";
