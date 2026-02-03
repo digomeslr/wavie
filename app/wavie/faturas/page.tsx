@@ -109,7 +109,10 @@ export default function WavieInvoicesPage() {
     const sel =
       "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,created_at,updated_at,clients(name,slug,service_type)";
 
-    let q = supabase.from("invoices").select(sel).order("month", { ascending: false });
+    let q = supabase
+      .from("invoices")
+      .select(sel)
+      .order("month", { ascending: false });
 
     if (filterStatus) q = q.eq("status", filterStatus);
     if (filterMonth) {
@@ -125,7 +128,9 @@ export default function WavieInvoicesPage() {
       // fallback sem join, se o relacionamento não estiver configurado
       const { data: data2, error: error2 } = await supabase
         .from("invoices")
-        .select("id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,created_at,updated_at")
+        .select(
+          "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,created_at,updated_at"
+        )
         .order("month", { ascending: false });
 
       if (error2) {
@@ -211,6 +216,13 @@ export default function WavieInvoicesPage() {
     );
 
     await load();
+  }
+
+  function exportCsv() {
+    const url = filterMonth
+      ? `/wavie/reports/invoices/monthly?month=${filterMonth}`
+      : `/wavie/reports/invoices/monthly`;
+    window.open(url, "_blank");
   }
 
   async function handleLogout() {
@@ -339,6 +351,13 @@ export default function WavieInvoicesPage() {
               className="h-10 self-end rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm hover:border-neutral-900 disabled:opacity-60"
             >
               {loading ? "Atualizando…" : "Atualizar"}
+            </button>
+
+            <button
+              onClick={exportCsv}
+              className="h-10 self-end rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              Exportar CSV
             </button>
           </div>
         </div>
