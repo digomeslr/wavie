@@ -8,7 +8,6 @@ import RegisterPaymentModalClient from "./register-payment-modal-client";
 type InvoiceRow = {
   id: string;
   client_id: string | null;
-  period_month: string; // "YYYY-MM-01"
   status: "open" | "sent" | "paid" | "void" | string;
   amount_due_cents: number;
   commission_cents: number | null;
@@ -16,6 +15,14 @@ type InvoiceRow = {
   created_at: string;
   paid_at: string | null;
   clients?: { id: string; name: string | null } | null;
+
+  // colunas possíveis (dependem do schema)
+  period_month?: string | null;
+  month?: string | null;
+  billing_month?: string | null;
+  period?: string | null;
+  period_start?: string | null;
+  month_start?: string | null;
 };
 
 type PaymentRow = {
@@ -70,6 +77,106 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
   if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
+/**
+ * Descobre qual coluna representa "mês" na tabela invoices.
+ * Evita quebrar quando o schema não tem period_month.
+ */
+async function resolveInvoicesMonthColumn(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const candidates = [
+    "period_month",
+    "billing_month",
+    "month",
+    "period_start",
+    "month_start",
+    "period",
+  ] as const;
+
+  // Tenta ler 1 linha pra inspecionar chaves reais (sem depender de coluna específica)
+  const { data, error } = await supabase.from("invoices").select("*").limit(1);
+
+  if (error) {
+    // Se falhar por permissão/RLS, ainda tentamos por "tentativa e erro" no filtro depois.
+    return { col: null as string | null, hint: `Não consegui inspecionar schema: ${error.message}` };
+  }
+
+  const row = (data?.[0] ?? null) as Record<string, any> | null;
+  if (!row) {
+    // tabela vazia: não dá pra inferir por chaves, então tentamos por tentativa/erro no filtro
+    return { col: null as string | null, hint: "Tabela invoices vazia (inferência por chave indisponível)." };
+  }
+
+  for (const c of candidates) {
+    if (Object.prototype.hasOwnProperty.call(row, c)) {
+      return { col: c as string, hint: null as string | null };
+    }
+  }
+
+  return {
+    col: null as string | null,
+    hint: `Nenhuma coluna de mês encontrada. Procure por uma destas: ${candidates.join(", ")}.`,
+  };
+}
+
+/**
+ * Faz o query das invoices do mês tentando a coluna correta.
+ */
+async function fetchInvoicesForMonth({
+  supabase,
+  periodMonthISO,
+  status,
+  monthColMaybe,
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  periodMonthISO: string;
+  status: string;
+  monthColMaybe: string | null;
+}) {
+  // Campos que SEMPRE existem no seu UI
+  const baseSelect =
+    "id,client_id,status,amount_due_cents,commission_cents,fixed_fee_cents,created_at,paid_at, clients:clients(id,name)";
+
+  // 1) Se já sabemos a coluna, usa ela direto
+  if (monthColMaybe) {
+    let q = supabase.from("invoices").select(baseSelect).eq(monthColMaybe as any, periodMonthISO).order("created_at", {
+      ascending: false,
+    });
+
+    if (status !== "all") q = q.eq("status", status);
+
+    const res = await q;
+    if (res.error) throw new Error(res.error.message);
+    return (res.data ?? []) as any as InvoiceRow[];
+  }
+
+  // 2) Se não sabemos, tenta em sequência até achar uma que exista
+  const candidates = ["period_month", "billing_month", "month", "period_start", "month_start", "period"];
+
+  for (const c of candidates) {
+    let q = supabase.from("invoices").select(baseSelect).eq(c as any, periodMonthISO).order("created_at", {
+      ascending: false,
+    });
+
+    if (status !== "all") q = q.eq("status", status);
+
+    const { data, error } = await q;
+
+    if (!error) return (data ?? []) as any as InvoiceRow[];
+
+    // Se for erro de coluna inexistente, tenta o próximo
+    const msg = (error.message ?? "").toLowerCase();
+    if (msg.includes("does not exist") && msg.includes("column") && msg.includes(`invoices.${c}`)) {
+      continue;
+    }
+
+    // Qualquer outro erro é real (RLS, permissão, etc.)
+    throw new Error(error.message);
+  }
+
+  throw new Error(
+    "Não encontrei uma coluna de mês em `invoices`. Verifique o schema (ex.: period_month / month / billing_month)."
+  );
+}
+
 /** RPC mensal (B14) */
 async function generateInvoiceForMonth(formData: FormData) {
   "use server";
@@ -105,24 +212,22 @@ export default async function WavieFaturasPage({
 
   const month = parseMonthParam(searchParams?.month);
   const status = parseStatusParam(searchParams?.status);
-  const period_month = firstDayOfMonthISO(month);
+  const periodMonthISO = firstDayOfMonthISO(month);
 
-  let invQ = supabase
-    .from("invoices")
-    .select(
-      "id,client_id,period_month,status,amount_due_cents,commission_cents,fixed_fee_cents,created_at,paid_at, clients:clients(id,name)"
-    )
-    .eq("period_month", period_month)
-    .order("created_at", { ascending: false });
+  // Descobre coluna do mês (se possível)
+  const { col: monthCol, hint } = await resolveInvoicesMonthColumn(supabase);
 
-  if (status !== "all") invQ = invQ.eq("status", status);
+  // invoices do mês (com fallback automático de coluna)
+  const invoices = await fetchInvoicesForMonth({
+    supabase,
+    periodMonthISO,
+    status,
+    monthColMaybe: monthCol,
+  });
 
-  const { data: invoicesRaw, error: invErr } = await invQ;
-  if (invErr) throw new Error(invErr.message);
-
-  const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
   const invoiceIds = invoices.map((i) => i.id);
 
+  // pagamentos dessas invoices
   let payments: PaymentRow[] = [];
   if (invoiceIds.length > 0) {
     const { data: pays, error: payErr } = await supabase
@@ -135,6 +240,7 @@ export default async function WavieFaturasPage({
     payments = (pays ?? []) as any;
   }
 
+  // agrega
   const paidByInvoice = new Map<string, number>();
   const countByInvoice = new Map<string, number>();
   for (const p of payments) {
@@ -146,19 +252,13 @@ export default async function WavieFaturasPage({
 
   return (
     <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      <div
-        style={{
-          padding: 12,
-          borderRadius: 14,
-          border: "2px solid #000",
-          background: "#fff3cd",
-          marginBottom: 12,
-          fontWeight: 900,
-        }}
-      >
-        ✅ BUILD MARKER: B15.2 / Registrar Pagamento (deve aparecer em produção)
+      {/* Debug útil se precisar */}
+      <div style={{ fontSize: 12, opacity: 0.65, marginBottom: 10 }}>
+        invoices month column: <b>{monthCol ?? "(auto/fallback)"}</b>
+        {hint ? <> • hint: {hint}</> : null}
       </div>
 
+      {/* Header */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
@@ -197,6 +297,7 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
+      {/* Gerar/Atualizar (B14) */}
       <div
         style={{
           padding: 14,
@@ -260,6 +361,7 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
+      {/* Filtros + CSV */}
       <div
         style={{
           padding: 14,
@@ -268,15 +370,7 @@ export default async function WavieFaturasPage({
           background: "white",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            gap: 12,
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
           <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -435,7 +529,10 @@ export default async function WavieFaturasPage({
                     </div>
 
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
+                      <RegisterPaymentModal
+                        invoiceId={inv.id}
+                        defaultAmountCents={remaining > 0 ? remaining : due}
+                      />
                     </div>
                   </div>
 
