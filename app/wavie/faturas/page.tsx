@@ -10,7 +10,7 @@ type InvoiceStatus = "open" | "sent" | "paid" | "void";
 type InvoiceRow = {
   id: string;
   client_id: string;
-  month: string; // date (YYYY-MM-DD)
+  month: string; // YYYY-MM-DD
   orders_count: number;
   gross_cents: number;
   wavie_fee_cents: number;
@@ -39,6 +39,11 @@ function toMonthStartDate(monthKey: string) {
   return `${monthKey}-01`;
 }
 
+function csvEscape(val: any) {
+  const s = String(val ?? "");
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
 export default function WavieInvoicesPage() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
@@ -61,6 +66,10 @@ export default function WavieInvoicesPage() {
   });
   const [generating, setGenerating] = useState(false);
   const [genMsg, setGenMsg] = useState<string | null>(null);
+
+  // export CSV
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   // Guard wavie_admin
   useEffect(() => {
@@ -212,11 +221,116 @@ export default function WavieInvoicesPage() {
     await load();
   }
 
-  function exportCsv() {
-    const url = filterMonth
-      ? `/wavie/reports/invoices/monthly?month=${filterMonth}`
-      : `/wavie/reports/invoices/monthly`;
-    window.open(url, "_blank");
+  async function exportCsv() {
+    setExportMsg(null);
+    setErr(null);
+    setExporting(true);
+
+    try {
+      // 1) tenta com join (se relacionamento existir)
+      const sel =
+        "id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status,clients(name,slug,service_type)";
+
+      let q = supabase
+        .from("invoices")
+        .select(sel)
+        .order("month", { ascending: false });
+
+      if (filterStatus) q = q.eq("status", filterStatus);
+      if (filterMonth) {
+        const ms = toMonthStartDate(filterMonth);
+        if (ms) q = q.eq("month", ms);
+      }
+
+      const { data, error } = await q;
+
+      let exportRows: any[] = data ?? [];
+
+      if (error) {
+        // 2) fallback: sem join + busca clients separadamente
+        const { data: inv2, error: invErr2 } = await supabase
+          .from("invoices")
+          .select("id,client_id,month,orders_count,gross_cents,wavie_fee_cents,status")
+          .order("month", { ascending: false });
+
+        if (invErr2) throw new Error(invErr2.message);
+
+        let invFiltered = inv2 ?? [];
+
+        if (filterStatus) invFiltered = invFiltered.filter((r: any) => r.status === filterStatus);
+        if (filterMonth) {
+          const ms = toMonthStartDate(filterMonth);
+          if (ms) invFiltered = invFiltered.filter((r: any) => r.month === ms);
+        }
+
+        const clientIds = Array.from(new Set(invFiltered.map((r: any) => r.client_id))).filter(Boolean);
+
+        const { data: clientsData, error: cErr } = await supabase
+          .from("clients")
+          .select("id,name,slug,service_type")
+          .in("id", clientIds);
+
+        if (cErr) throw new Error(cErr.message);
+
+        const map = new Map<string, any>();
+        (clientsData ?? []).forEach((c: any) => map.set(c.id, c));
+
+        exportRows = invFiltered.map((r: any) => ({
+          ...r,
+          clients: map.get(r.client_id) ?? null,
+        }));
+      }
+
+      // 3) montar CSV
+      const header = [
+        "month",
+        "client_name",
+        "client_slug",
+        "service_type",
+        "orders_count",
+        "gross_brl",
+        "wavie_fee_brl",
+        "status",
+      ];
+
+      const lines = [header.join(",")];
+
+      for (const r of exportRows) {
+        const line = [
+          csvEscape(r.month),
+          csvEscape(r.clients?.name ?? ""),
+          csvEscape(r.clients?.slug ?? ""),
+          csvEscape(r.clients?.service_type ?? ""),
+          csvEscape(r.orders_count ?? 0),
+          csvEscape((Number(r.gross_cents ?? 0) / 100).toFixed(2)),
+          csvEscape((Number(r.wavie_fee_cents ?? 0) / 100).toFixed(2)),
+          csvEscape(r.status ?? ""),
+        ].join(",");
+
+        lines.push(line);
+      }
+
+      const csv = lines.join("\n") + "\n";
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+
+      const filename = `wavie-invoices-${filterMonth || "all"}${filterStatus ? `-${filterStatus}` : ""}.csv`;
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+
+      setExportMsg(`CSV gerado: ${filename}`);
+    } catch (e: any) {
+      setErr(e?.message ?? "Falha ao exportar CSV.");
+    } finally {
+      setExporting(false);
+    }
   }
 
   async function handleLogout() {
@@ -311,16 +425,15 @@ export default function WavieInvoicesPage() {
           <div className="flex items-start justify-between gap-4 w-full">
             <div>
               <h2 className="text-base font-semibold">Lista de faturas</h2>
-              <p className="mt-1 text-xs text-neutral-500">
-                Você pode filtrar por mês e status.
-              </p>
+              <p className="mt-1 text-xs text-neutral-500">Você pode filtrar por mês e status.</p>
             </div>
 
             <button
               onClick={exportCsv}
-              className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+              disabled={exporting}
+              className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
             >
-              Exportar CSV
+              {exporting ? "Exportando…" : "Exportar CSV"}
             </button>
           </div>
 
@@ -359,6 +472,12 @@ export default function WavieInvoicesPage() {
             </button>
           </div>
         </div>
+
+        {exportMsg ? (
+          <div className="mt-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-800">
+            {exportMsg}
+          </div>
+        ) : null}
 
         {err ? (
           <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
