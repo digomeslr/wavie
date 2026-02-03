@@ -22,7 +22,7 @@ export async function createClient() {
             cookieStore.set(name, value, options);
           });
         } catch {
-          // ok em alguns contextos
+          // ok
         }
       },
     },
