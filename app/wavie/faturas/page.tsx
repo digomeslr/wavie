@@ -58,7 +58,8 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+
+  if (!user) redirect("/wavie/login");
 
   const { data: profile } = await supabase
     .from("profiles")
@@ -66,7 +67,7 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
     .eq("user_id", user.id)
     .maybeSingle<{ role: string | null }>();
 
-  if (!profile || profile.role !== "wavie_admin") redirect("/login");
+  if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
 /** RPC mensal (B14) */
@@ -99,7 +100,6 @@ export default async function WavieFaturasPage({
 }: {
   searchParams?: { month?: string; status?: string };
 }) {
-  // ✅ createClient agora é async
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
@@ -107,7 +107,6 @@ export default async function WavieFaturasPage({
   const status = parseStatusParam(searchParams?.status);
   const period_month = firstDayOfMonthISO(month);
 
-  // invoices do mês
   let invQ = supabase
     .from("invoices")
     .select(
@@ -124,7 +123,6 @@ export default async function WavieFaturasPage({
   const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
   const invoiceIds = invoices.map((i) => i.id);
 
-  // pagamentos dessas invoices
   let payments: PaymentRow[] = [];
   if (invoiceIds.length > 0) {
     const { data: pays, error: payErr } = await supabase
@@ -137,7 +135,6 @@ export default async function WavieFaturasPage({
     payments = (pays ?? []) as any;
   }
 
-  // agrega
   const paidByInvoice = new Map<string, number>();
   const countByInvoice = new Map<string, number>();
   for (const p of payments) {
@@ -149,7 +146,6 @@ export default async function WavieFaturasPage({
 
   return (
     <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      {/* ✅ BUILD MARKER */}
       <div
         style={{
           padding: 12,
@@ -163,7 +159,6 @@ export default async function WavieFaturasPage({
         ✅ BUILD MARKER: B15.2 / Registrar Pagamento (deve aparecer em produção)
       </div>
 
-      {/* Header */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
@@ -202,7 +197,6 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
-      {/* Gerar/Atualizar (B14) */}
       <div
         style={{
           padding: 14,
@@ -266,7 +260,6 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
-      {/* Filtros + CSV */}
       <div
         style={{
           padding: 14,
@@ -275,7 +268,15 @@ export default async function WavieFaturasPage({
           background: "white",
         }}
       >
-        <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+          }}
+        >
           <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -434,10 +435,7 @@ export default async function WavieFaturasPage({
                     </div>
 
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <RegisterPaymentModal
-                        invoiceId={inv.id}
-                        defaultAmountCents={remaining > 0 ? remaining : due}
-                      />
+                      <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
                     </div>
                   </div>
 
