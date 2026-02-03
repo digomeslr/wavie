@@ -5,17 +5,19 @@ import { createClient } from "@/lib/supabase/server";
 import RegisterPaymentModalClient from "./register-payment-modal-client";
 import { createInvoicePayment } from "./actions";
 
+type ClientRow = { id: string; name: string | null; slug: string | null };
+
 type InvoiceRow = {
   id: string;
   client_id: string | null;
-  month: string; // date (YYYY-MM-DD)
+  month: string; // date
   status: "open" | "sent" | "paid" | "void" | string;
   orders_count: number | null;
   gross_cents: number | null;
   wavie_fee_cents: number | null;
   created_at: string;
   paid_at: string | null;
-  clients?: { id: string; name: string | null; slug?: string | null } | null;
+  clients?: { id: string; name: string | null; slug: string | null } | null;
 };
 
 type PaymentRow = {
@@ -26,12 +28,6 @@ type PaymentRow = {
   paid_at: string;
   reference: string | null;
   notes: string | null;
-};
-
-type ClientRow = {
-  id: string;
-  name: string | null;
-  slug: string | null;
 };
 
 function formatBRLFromCents(cents: number) {
@@ -61,18 +57,13 @@ function parseStatusParam(s?: string | null) {
 }
 
 function safeMsg(s: unknown) {
-  const raw = String(s ?? "");
-  // evita querystring gigante
-  return raw.slice(0, 180);
+  return String(s ?? "").slice(0, 220);
 }
 
-async function assertWavieAdminOrRedirect(
-  supabase: Awaited<ReturnType<typeof createClient>>
-) {
+async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
   if (!user) redirect("/wavie/login");
 
   const { data: profile } = await supabase
@@ -84,7 +75,7 @@ async function assertWavieAdminOrRedirect(
   if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
-/** RPC mensal: NÃO pode dar throw (senão vira 500 em produção) */
+/** RPC mensal: sem throw (evita 500) */
 async function generateInvoiceForMonth(formData: FormData) {
   "use server";
 
@@ -94,7 +85,6 @@ async function generateInvoiceForMonth(formData: FormData) {
   const client_slug = String(formData.get("client_slug") ?? "").trim();
   const month = String(formData.get("month") ?? "").trim(); // YYYY-MM
 
-  // validações -> volta pra tela com mensagem, sem crash
   if (!client_slug) redirect(`/wavie/faturas?gen_error=${encodeURIComponent("Selecione um cliente.")}`);
   if (!/^\d{4}-\d{2}$/.test(month)) {
     redirect(`/wavie/faturas?gen_error=${encodeURIComponent("Mês inválido (use YYYY-MM).")}`);
@@ -102,11 +92,12 @@ async function generateInvoiceForMonth(formData: FormData) {
 
   const month_date = firstDayOfMonthISO(month);
 
-  // Tenta variações de parâmetros (robusto contra divergência do nome no RPC)
+  // tenta variações de args (robusto)
   const attempts: Array<Record<string, any>> = [
     { p_client_slug: client_slug, p_period_month: month_date },
     { p_client_slug: client_slug, p_month: month_date },
     { client_slug, period_month: month_date },
+    { client_slug, month: month_date },
   ];
 
   let lastErr: string | null = null;
@@ -130,12 +121,7 @@ async function generateInvoiceForMonth(formData: FormData) {
 export default async function WavieFaturasPage({
   searchParams,
 }: {
-  searchParams?: {
-    month?: string;
-    status?: string;
-    gen_error?: string;
-    gen_ok?: string;
-  };
+  searchParams?: { month?: string; status?: string; gen_ok?: string; gen_error?: string };
 }) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
@@ -144,16 +130,20 @@ export default async function WavieFaturasPage({
   const status = parseStatusParam(searchParams?.status);
   const month_date = firstDayOfMonthISO(month);
 
-  // clientes para SELECT (slug)
-  const { data: clientsRaw } = await supabase
+  const genOk = searchParams?.gen_ok === "1";
+  const genError = searchParams?.gen_error ? decodeURIComponent(searchParams.gen_error) : null;
+
+  // select clientes
+  const { data: clientsRaw, error: cErr } = await supabase
     .from("clients")
     .select("id,name,slug")
     .order("name", { ascending: true })
     .limit(500);
 
+  if (cErr) redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(cErr.message))}`);
   const clients: ClientRow[] = (clientsRaw ?? []) as any;
 
-  // invoices do mês (schema real)
+  // invoices (schema real)
   let invQ = supabase
     .from("invoices")
     .select(
@@ -176,15 +166,12 @@ export default async function WavieFaturasPage({
   if (status !== "all") invQ = invQ.eq("status", status);
 
   const { data: invoicesRaw, error: invErr } = await invQ;
-  if (invErr) {
-    // esse erro ainda pode acontecer se o schema mudar
-    redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(invErr.message))}`);
-  }
+  if (invErr) redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(invErr.message))}`);
 
   const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
   const invoiceIds = invoices.map((i) => i.id);
 
-  // pagamentos
+  // payments
   let payments: PaymentRow[] = [];
   if (invoiceIds.length > 0) {
     const { data: pays, error: payErr } = await supabase
@@ -193,13 +180,11 @@ export default async function WavieFaturasPage({
       .in("invoice_id", invoiceIds)
       .order("paid_at", { ascending: false });
 
-    if (payErr) {
-      redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(payErr.message))}`);
-    }
+    if (payErr) redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(payErr.message))}`);
     payments = (pays ?? []) as any;
   }
 
-  // agrega
+  // aggregates
   const paidByInvoice = new Map<string, number>();
   const countByInvoice = new Map<string, number>();
   for (const p of payments) {
@@ -208,9 +193,6 @@ export default async function WavieFaturasPage({
   }
 
   const statuses = ["all", "open", "sent", "paid", "void"] as const;
-
-  const genError = searchParams?.gen_error ? decodeURIComponent(searchParams.gen_error) : null;
-  const genOk = searchParams?.gen_ok === "1";
 
   return (
     <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
@@ -224,7 +206,7 @@ export default async function WavieFaturasPage({
           fontWeight: 900,
         }}
       >
-        ✅ BUILD MARKER: B15.3 / Faturas (schema real + sem crash no Gerar)
+        ✅ BUILD MARKER: B15.4 / Faturas alinhadas ao schema (month/gross/wavie_fee)
       </div>
 
       {genOk ? (
@@ -238,25 +220,6 @@ export default async function WavieFaturasPage({
           ❌ {genError}
         </div>
       ) : null}
-
-      <div
-        style={{
-          padding: 12,
-          borderRadius: 14,
-          border: "1px solid rgba(0,0,0,0.12)",
-          background: "white",
-          marginBottom: 12,
-          fontSize: 13,
-        }}
-      >
-        <div style={{ fontWeight: 800, marginBottom: 4 }}>Schema (invoices):</div>
-        <div style={{ opacity: 0.85 }}>
-          month=<b>month</b> · status=<b>status</b> · bruto=<b>gross_cents</b> · due=<b>wavie_fee_cents</b>
-        </div>
-        <div style={{ marginTop: 6, opacity: 0.75 }}>
-          * “Total (due)” = <b>wavie_fee_cents</b> (taxa Wavie). “Bruto” = <b>gross_cents</b> (informativo).
-        </div>
-      </div>
 
       {/* Header */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
@@ -301,18 +264,23 @@ export default async function WavieFaturasPage({
       <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
         <div style={{ fontSize: 16, fontWeight: 800 }}>Gerar/atualizar fatura do mês</div>
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-          Usa a RPC <code>generate_invoice_for_month</code> (cliente por <code>clients.slug</code>).
+          RPC <code>generate_invoice_for_month</code> (cliente por <code>clients.slug</code>).
         </div>
 
         <div style={{ height: 10 }} />
 
         <form action={generateInvoiceForMonth} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ display: "grid", gap: 6, minWidth: 320 }}>
+          <label style={{ display: "grid", gap: 6, minWidth: 360 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>Cliente</span>
             <select
               name="client_slug"
               defaultValue=""
-              style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.15)", background: "white" }}
+              style={{
+                padding: "10px 10px",
+                borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.15)",
+                background: "white",
+              }}
             >
               <option value="" disabled>
                 Selecione…
@@ -331,7 +299,11 @@ export default async function WavieFaturasPage({
               name="month"
               type="month"
               defaultValue={month}
-              style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.15)" }}
+              style={{
+                padding: "10px 10px",
+                borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.15)",
+              }}
             />
           </label>
 
@@ -355,7 +327,7 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
-      {/* Filtros */}
+      {/* Lista */}
       <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
           <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
@@ -366,7 +338,12 @@ export default async function WavieFaturasPage({
                 name="month"
                 type="month"
                 defaultValue={month}
-                style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.15)", width: 160 }}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  width: 160,
+                }}
               />
 
               <select
@@ -428,7 +405,8 @@ export default async function WavieFaturasPage({
               const cnt = countByInvoice.get(inv.id) ?? 0;
 
               const gross = Number(inv.gross_cents ?? 0);
-              const due = Number(inv.wavie_fee_cents ?? 0);
+              const fee = Number(inv.wavie_fee_cents ?? 0);
+              const due = Math.max(gross - fee, 0);
               const remaining = Math.max(due - paid, 0);
 
               return (
@@ -456,6 +434,10 @@ export default async function WavieFaturasPage({
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Bruto</div>
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(gross)}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 12, opacity: 0.75 }}>Taxa Wavie</div>
+                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(fee)}</div>
                         </div>
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Total (due)</div>

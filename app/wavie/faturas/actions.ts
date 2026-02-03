@@ -20,7 +20,6 @@ function toCentsBRL(input: string): number {
 }
 
 export async function createInvoicePayment(formData: FormData) {
-  // createClient() é async no Next 16 (cookies async)
   const supabase = await createClient();
 
   const {
@@ -46,19 +45,57 @@ export async function createInvoicePayment(formData: FormData) {
     return { ok: false, error: e?.message ?? "Valor inválido" };
   }
 
-  const paidAtIso = paid_at ? new Date(paid_at).toISOString() : null;
+  const paidAtIso = paid_at ? new Date(paid_at).toISOString() : new Date().toISOString();
 
   const { error } = await supabase.from("invoice_payments").insert({
     invoice_id,
     amount_cents,
     method,
-    paid_at: paidAtIso ?? undefined,
+    paid_at: paidAtIso,
     reference,
     notes,
     created_by: user.id,
   });
 
   if (error) return { ok: false, error: error.message };
+
+  // ✅ Recalcula status/paid_at da invoice no server (sem depender de trigger quebrado)
+  // due = gross_cents - wavie_fee_cents
+  const { data: inv, error: invErr } = await supabase
+    .from("invoices")
+    .select("id,gross_cents,wavie_fee_cents,paid_at,status")
+    .eq("id", invoice_id)
+    .maybeSingle<{
+      id: string;
+      gross_cents: number | null;
+      wavie_fee_cents: number | null;
+      paid_at: string | null;
+      status: string | null;
+    }>();
+
+  if (!invErr && inv) {
+    const gross = Number(inv.gross_cents ?? 0);
+    const fee = Number(inv.wavie_fee_cents ?? 0);
+    const due = Math.max(gross - fee, 0);
+
+    const { data: sums, error: sumErr } = await supabase
+      .from("invoice_payments")
+      .select("amount_cents")
+      .eq("invoice_id", invoice_id);
+
+    if (!sumErr) {
+      const paid = (sums ?? []).reduce((acc, r: any) => acc + Number(r.amount_cents ?? 0), 0);
+
+      const fullyPaid = due > 0 ? paid >= due : paid > 0; // se due=0, qualquer pagamento marca como paid
+      const nextStatus = fullyPaid ? "paid" : inv.status ?? "open";
+      const nextPaidAt = fullyPaid ? inv.paid_at ?? new Date().toISOString() : null;
+
+      await supabase
+        .from("invoices")
+        .update({ status: nextStatus, paid_at: nextPaidAt })
+        .eq("id", invoice_id);
+    }
+  }
 
   revalidatePath("/wavie/faturas");
   return { ok: true };
