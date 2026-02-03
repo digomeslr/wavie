@@ -54,7 +54,7 @@ function parseStatusParam(s?: string | null) {
   return "all";
 }
 
-async function assertWavieAdminOrRedirect(supabase: ReturnType<typeof createClient>) {
+async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -73,7 +73,7 @@ async function assertWavieAdminOrRedirect(supabase: ReturnType<typeof createClie
 async function generateInvoiceForMonth(formData: FormData) {
   "use server";
 
-  const supabase = createClient();
+  const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
   const client_slug = String(formData.get("client_slug") ?? "").trim();
@@ -99,7 +99,8 @@ export default async function WavieFaturasPage({
 }: {
   searchParams?: { month?: string; status?: string };
 }) {
-  const supabase = createClient();
+  // ✅ createClient agora é async
+  const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
   const month = parseMonthParam(searchParams?.month);
@@ -148,7 +149,7 @@ export default async function WavieFaturasPage({
 
   return (
     <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      {/* ✅ BUILD MARKER — se não aparecer em produção, a rota NÃO é este arquivo */}
+      {/* ✅ BUILD MARKER */}
       <div
         style={{
           padding: 12,
@@ -433,7 +434,10 @@ export default async function WavieFaturasPage({
                     </div>
 
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
+                      <RegisterPaymentModal
+                        invoiceId={inv.id}
+                        defaultAmountCents={remaining > 0 ? remaining : due}
+                      />
                     </div>
                   </div>
 
