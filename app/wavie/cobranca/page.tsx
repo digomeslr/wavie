@@ -2,8 +2,13 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import SeedFlashCleaner from "./seed-flash-cleaner";
+
 
 /* ===================== Types ===================== */
+
+<SeedFlashCleaner />
+
 
 type ClientRow = {
   id: string;
