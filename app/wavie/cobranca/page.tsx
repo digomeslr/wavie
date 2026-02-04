@@ -1,14 +1,11 @@
+// app/wavie/cobranca/page.tsx
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import SeedFlashCleaner from "./seed-flash-cleaner";
 
-
 /* ===================== Types ===================== */
-
-<SeedFlashCleaner />
-
 
 type ClientRow = {
   id: string;
@@ -29,27 +26,41 @@ type SubscriptionRow = {
   clients?: ClientRow | null;
 };
 
+type InvoiceRow = {
+  id: string;
+  client_id: string;
+  month: string; // YYYY-MM-01
+  status: "open" | "sent" | "paid" | "void";
+  locked_at: string | null;
+  gross_cents: number;
+  wavie_fee_cents: number;
+};
+
 type AttemptRow = {
   id: string;
   invoice_id: string;
+  status: "queued" | "processing" | "success" | "failed" | "retry_scheduled" | "canceled";
+  attempt_no: number;
   provider: string;
-  method: string;
-  status: string;
-  amount_cents: number;
-  error_message: string | null;
+  scheduled_for: string | null;
+  processed_at: string | null;
+  outcome_code: string | null;
+  outcome_message: string | null;
   created_at: string;
 };
 
 /* ===================== Helpers ===================== */
 
 function formatBRLFromCents(cents: number) {
-  return (cents / 100).toLocaleString("pt-BR", {
+  return ((cents ?? 0) / 100).toLocaleString("pt-BR", {
     style: "currency",
     currency: "BRL",
   });
 }
 
-async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
+async function assertWavieAdminOrRedirect(
+  supabase: Awaited<ReturnType<typeof createClient>>
+) {
   const {
     data: { user },
     error: userErr,
@@ -64,6 +75,11 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
     .maybeSingle<{ role: string | null }>();
 
   if (profErr || !profile || profile.role !== "wavie_admin") redirect("/wavie/login");
+}
+
+function shortId(id: string) {
+  if (!id) return "";
+  return `${id.slice(0, 8)}…${id.slice(-6)}`;
 }
 
 /* ===================== Server Actions ===================== */
@@ -93,18 +109,12 @@ async function togglePaymentModeAction(formData: FormData) {
   revalidatePath("/wavie/cobranca");
 }
 
-/**
- * ✅ Seed idempotente: cria 1 subscription por client que não tem.
- * IMPORTANTE: Server Action em <form action={...}> deve retornar void/Promise<void>
- * então a gente finaliza com redirect incluindo um "flash" via querystring.
- */
 async function seedSubscriptionsAction() {
   "use server";
 
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
-  // pega todos os clients
   const { data: clients, error: cErr } = await supabase.from("clients").select("id");
   if (cErr) {
     redirect(`/wavie/cobranca?seed=error&msg=${encodeURIComponent(cErr.message)}`);
@@ -115,8 +125,9 @@ async function seedSubscriptionsAction() {
     redirect(`/wavie/cobranca?seed=ok&c=0&s=0`);
   }
 
-  // subscriptions existentes
-  const { data: subs, error: sErr } = await supabase.from("billing_subscriptions").select("client_id");
+  const { data: subs, error: sErr } = await supabase
+    .from("billing_subscriptions")
+    .select("client_id");
   if (sErr) {
     redirect(`/wavie/cobranca?seed=error&msg=${encodeURIComponent(sErr.message)}`);
   }
@@ -146,7 +157,58 @@ async function seedSubscriptionsAction() {
   }
 
   revalidatePath("/wavie/cobranca");
-  redirect(`/wavie/cobranca?seed=ok&c=${encodeURIComponent(String(toCreate.length))}&s=${encodeURIComponent(String(existing.size))}`);
+  redirect(
+    `/wavie/cobranca?seed=ok&c=${encodeURIComponent(String(toCreate.length))}&s=${encodeURIComponent(
+      String(existing.size)
+    )}`
+  );
+}
+
+async function enqueueAttemptAction(formData: FormData) {
+  "use server";
+
+  const invoice_id = String(formData.get("invoice_id") ?? "");
+  if (!invoice_id) throw new Error("invoice_id ausente");
+
+  const supabase = await createClient();
+  await assertWavieAdminOrRedirect(supabase);
+
+  const idem = `sim-${invoice_id}-${Date.now()}`;
+
+  const { data, error } = await supabase.rpc("enqueue_invoice_attempt", {
+    p_invoice_id: invoice_id,
+    p_idempotency_key: idem,
+  });
+
+  if (error) {
+    console.error("COBRANCA enqueueAttemptAction FAILED:", error);
+    throw new Error("ENQUEUE_ATTEMPT_FAILED");
+  }
+
+  // data é uuid (id do attempt)
+  revalidatePath("/wavie/cobranca");
+  redirect(`/wavie/cobranca?enq=ok&id=${encodeURIComponent(String(data ?? ""))}`);
+}
+
+async function processAttemptAction(formData: FormData) {
+  "use server";
+
+  const attempt_id = String(formData.get("attempt_id") ?? "");
+  if (!attempt_id) throw new Error("attempt_id ausente");
+
+  const supabase = await createClient();
+  await assertWavieAdminOrRedirect(supabase);
+
+  const { error } = await supabase.rpc("process_invoice_attempt", {
+    p_attempt_id: attempt_id,
+  });
+
+  if (error) {
+    console.error("COBRANCA processAttemptAction FAILED:", error);
+    throw new Error("PROCESS_ATTEMPT_FAILED");
+  }
+
+  revalidatePath("/wavie/cobranca");
 }
 
 /* ===================== Page ===================== */
@@ -154,21 +216,25 @@ async function seedSubscriptionsAction() {
 export default async function WavieCobrancaPage({
   searchParams,
 }: {
-  // Next 16 pode entregar Promise
-  searchParams?: Promise<{ seed?: string; c?: string; s?: string; msg?: string }> | { seed?: string; c?: string; s?: string; msg?: string };
+  searchParams?:
+    | Promise<{ seed?: string; c?: string; s?: string; msg?: string; enq?: string; id?: string }>
+    | { seed?: string; c?: string; s?: string; msg?: string; enq?: string; id?: string };
 }) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
   const sp =
     searchParams && typeof (searchParams as any).then === "function"
-      ? await (searchParams as Promise<{ seed?: string; c?: string; s?: string; msg?: string }>)
-      : (searchParams as { seed?: string; c?: string; s?: string; msg?: string } | undefined);
+      ? await (searchParams as Promise<any>)
+      : (searchParams as any | undefined);
 
   const seed = String(sp?.seed ?? "");
   const created = Number(sp?.c ?? 0);
   const skipped = Number(sp?.s ?? 0);
   const msg = String(sp?.msg ?? "");
+
+  const enq = String(sp?.enq ?? "");
+  const enqId = String(sp?.id ?? "");
 
   // Subscriptions + Client
   const { data: subsRaw, error: subsErr } = await supabase
@@ -179,20 +245,36 @@ export default async function WavieCobrancaPage({
     .order("created_at", { ascending: true });
 
   if (subsErr) throw new Error(subsErr.message);
-
   const subscriptions: SubscriptionRow[] = (subsRaw ?? []) as any;
 
-  // Attempts (últimas)
-  const { data: attemptsRaw } = await supabase
-    .from("invoice_attempts")
-    .select("id,invoice_id,provider,method,status,amount_cents,error_message,created_at")
-    .order("created_at", { ascending: false })
-    .limit(50);
+  // Invoices (últimas, para enfileirar tentativa)
+  const { data: invRaw, error: invErr } = await supabase
+    .from("invoices")
+    .select("id,client_id,month,status,locked_at,gross_cents,wavie_fee_cents")
+    .order("month", { ascending: false })
+    .limit(30);
 
+  if (invErr) throw new Error(invErr.message);
+  const invoices: InvoiceRow[] = (invRaw ?? []) as any;
+
+  // Attempts (últimas)
+  const { data: attemptsRaw, error: attErr } = await supabase
+    .from("invoice_attempts")
+    .select(
+      "id,invoice_id,status,attempt_no,provider,scheduled_for,processed_at,outcome_code,outcome_message,created_at"
+    )
+    .order("created_at", { ascending: false })
+    .limit(60);
+
+  if (attErr) throw new Error(attErr.message);
   const attempts: AttemptRow[] = (attemptsRaw ?? []) as any;
+
+  const processable = attempts.filter((a) => a.status === "queued" || a.status === "retry_scheduled");
 
   return (
     <div style={{ padding: 18, maxWidth: 1200, margin: "0 auto" }}>
+      <SeedFlashCleaner />
+
       {/* Header */}
       <div
         style={{
@@ -205,9 +287,9 @@ export default async function WavieCobrancaPage({
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div>
             <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>WAVIE • COBRANÇA</div>
-            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Assinaturas & Cobrança</h1>
+            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Assinaturas & Simulador de Cobrança</h1>
             <p style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>
-              Gateway-ready • Manual hoje, automático amanhã
+              Pipeline auditável • Sem gateway real (simulação ERP-level)
             </p>
           </div>
 
@@ -236,12 +318,17 @@ export default async function WavieCobrancaPage({
             ✅ Seed concluído • Criadas: <b>{created}</b> • Já existiam: <b>{skipped}</b>
           </div>
         ) : seed === "error" ? (
-          <div style={bannerErr()}>
-            ❌ Seed falhou • {msg || "erro desconhecido"}
+          <div style={bannerErr()}>❌ Seed falhou • {msg || "erro desconhecido"}</div>
+        ) : enq === "ok" ? (
+          <div style={bannerOk()}>
+            ✅ Tentativa enfileirada • attempt_id:{" "}
+            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+              {enqId || "—"}
+            </span>
           </div>
         ) : (
           <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Dica: se esta página estiver vazia, clique em <b>“Criar assinaturas…”</b>. Isso é idempotente (não duplica).
+            Dica: enfileire uma tentativa em uma fatura <b>aberta</b> e depois processe.
           </div>
         )}
       </div>
@@ -312,29 +399,127 @@ export default async function WavieCobrancaPage({
 
       <div style={{ height: 14 }} />
 
+      {/* Enqueue attempts (from invoices) */}
+      <div style={card()}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0 }}>Enfileirar tentativa (simulador)</h2>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>
+            Invoices carregadas: <b>{invoices.length}</b>
+          </div>
+        </div>
+
+        <div style={{ height: 10 }} />
+
+        <div style={{ display: "grid", gap: 10 }}>
+          {invoices.slice(0, 10).map((inv) => {
+            const locked = !!inv.locked_at;
+            const disabled = locked || inv.status === "paid" || inv.status === "void";
+
+            return (
+              <div key={inv.id} style={row()}>
+                <div>
+                  <div style={{ fontWeight: 900 }}>
+                    {inv.month} • {inv.status.toUpperCase()} {locked ? "• 🔒 LOCKED" : ""}
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>
+                    invoice:{" "}
+                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                      {shortId(inv.id)}
+                    </span>{" "}
+                    • client:{" "}
+                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                      {shortId(inv.client_id)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>
+                    Bruto: <b>{formatBRLFromCents(inv.gross_cents)}</b> • Devido Wavie:{" "}
+                    <b>{formatBRLFromCents(inv.wavie_fee_cents)}</b>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <form action={enqueueAttemptAction}>
+                    <input type="hidden" name="invoice_id" value={inv.id} />
+                    <button style={disabled ? btnDisabled() : btnDark()} disabled={disabled}>
+                      Enfileirar tentativa
+                    </button>
+                  </form>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+          Observação: faturas <b>paid/void</b> ou com <b>locked_at</b> não permitem tentativas (governança hard).
+        </div>
+      </div>
+
+      <div style={{ height: 14 }} />
+
       {/* Attempts */}
       <div style={card()}>
-        <h2 style={{ marginTop: 0 }}>Tentativas de cobrança (audit trail)</h2>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <h2 style={{ marginTop: 0, marginBottom: 0 }}>Tentativas de cobrança (audit trail)</h2>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>
+            Processáveis agora: <b>{processable.length}</b>
+          </div>
+        </div>
+
+        <div style={{ height: 10 }} />
 
         {attempts.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13, opacity: 0.75 }}>Nenhuma tentativa registrada.</p>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
-            {attempts.map((a) => (
-              <div key={a.id} style={attemptRow(a.status)}>
-                <div>
-                  <div style={{ fontSize: 13 }}>
-                    <b>{a.provider}</b> • {a.method} • {formatBRLFromCents(a.amount_cents)}
-                  </div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>{new Date(a.created_at).toLocaleString("pt-BR")}</div>
-                </div>
+            {attempts.map((a) => {
+              const canProcess = a.status === "queued" || a.status === "retry_scheduled";
 
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontWeight: 900 }}>{a.status}</div>
-                  {a.error_message && <div style={{ fontSize: 12, color: "#b91c1c" }}>{a.error_message}</div>}
+              return (
+                <div key={a.id} style={attemptRow(a.status)}>
+                  <div>
+                    <div style={{ fontSize: 13 }}>
+                      <b>{a.status.toUpperCase()}</b> • attempt #{a.attempt_no} • {a.provider}
+                    </div>
+
+                    <div style={{ fontSize: 12, opacity: 0.75 }}>
+                      attempt:{" "}
+                      <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                        {shortId(a.id)}
+                      </span>{" "}
+                      • invoice:{" "}
+                      <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                        {shortId(a.invoice_id)}
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: 12, opacity: 0.75 }}>
+                      Criado: {new Date(a.created_at).toLocaleString("pt-BR")}
+                      {a.scheduled_for ? ` • Agendado: ${new Date(a.scheduled_for).toLocaleString("pt-BR")}` : ""}
+                      {a.processed_at ? ` • Processado: ${new Date(a.processed_at).toLocaleString("pt-BR")}` : ""}
+                    </div>
+
+                    {(a.outcome_code || a.outcome_message) && (
+                      <div style={{ fontSize: 12, marginTop: 4 }}>
+                        <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                          {a.outcome_code ?? "—"}
+                        </span>
+                        {a.outcome_message ? ` • ${a.outcome_message}` : ""}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ textAlign: "right", display: "flex", alignItems: "center", gap: 8 }}>
+                    <form action={processAttemptAction}>
+                      <input type="hidden" name="attempt_id" value={a.id} />
+                      <button style={canProcess ? btnDark() : btnDisabled()} disabled={!canProcess}>
+                        Processar
+                      </button>
+                    </form>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -368,6 +553,18 @@ function btnDark() {
   } as const;
 }
 
+function btnDisabled() {
+  return {
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "1px solid rgba(0,0,0,0.14)",
+    background: "rgba(0,0,0,0.25)",
+    color: "white",
+    cursor: "not-allowed",
+    fontWeight: 900,
+  } as const;
+}
+
 function card() {
   return {
     padding: 16,
@@ -387,6 +584,19 @@ function subCard() {
   } as const;
 }
 
+function row() {
+  return {
+    padding: 12,
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "rgba(0,0,0,0.02)",
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+  } as const;
+}
+
 function pill(bg: string) {
   return {
     padding: "6px 10px",
@@ -398,18 +608,27 @@ function pill(bg: string) {
   } as const;
 }
 
-function attemptRow(status: string) {
-  const color =
-    status === "succeeded" ? "#dcfce7" : status === "failed" ? "#fee2e2" : "#fef3c7";
+function attemptRow(status: AttemptRow["status"]) {
+  const bg =
+    status === "success"
+      ? "#dcfce7"
+      : status === "failed"
+      ? "#fee2e2"
+      : status === "processing"
+      ? "#e0f2fe"
+      : status === "retry_scheduled"
+      ? "#fef3c7"
+      : "#ffffff";
 
   return {
     padding: 12,
     borderRadius: 12,
     border: "1px solid rgba(0,0,0,0.10)",
-    background: color,
+    background: bg,
     display: "flex",
     justifyContent: "space-between",
     gap: 12,
+    flexWrap: "wrap",
   } as const;
 }
 

@@ -220,8 +220,10 @@ export default async function WavieFinanceiroPage({
   // lock status do mês
   const totalInvoices = invoices.length;
   const lockedCount = invoices.filter((i) => i.locked_at).length;
+
   const isFullyLocked = totalInvoices > 0 && lockedCount === totalInvoices;
   const isPartiallyLocked = lockedCount > 0 && lockedCount < totalInvoices;
+  const isLockedAny = lockedCount > 0;
 
   // inadimplência por cliente
   type Debtor = { clientId: string; clientName: string; due: number; paid: number; open: number; invoices: number };
@@ -282,13 +284,21 @@ export default async function WavieFinanceiroPage({
             <div>
               <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>WAVIE • FINANCEIRO</div>
               <div style={{ fontSize: 24, fontWeight: 1000, marginTop: 2 }}>Painel Financeiro</div>
+
               <div style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>
                 Mês <b>{month}</b> • Status <b>{status}</b> • Base: invoices + invoice_payments
               </div>
+
               <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Devido = wavie_fee_cents</span>
                 <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Pago = soma payments</span>
                 <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Em aberto = devido − pago</span>
+
+                {isFullyLocked ? (
+                  <span style={pill("rgba(239,68,68,0.16)", "#7f1d1d")}>🔒 MÊS FECHADO</span>
+                ) : isPartiallyLocked ? (
+                  <span style={pill("rgba(245,158,11,0.18)", "#7c2d12")}>🔒 PARCIALMENTE FECHADO</span>
+                ) : null}
               </div>
             </div>
 
@@ -401,8 +411,20 @@ export default async function WavieFinanceiroPage({
             <div style={{ display: "flex", alignItems: "end" }}>
               <span
                 style={pill(
-                  isFullyLocked ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)",
-                  isFullyLocked ? "#065f46" : "#7c2d12"
+                  totalInvoices === 0
+                    ? "rgba(0,0,0,0.06)"
+                    : isFullyLocked
+                    ? "rgba(239,68,68,0.16)"
+                    : isPartiallyLocked
+                    ? "rgba(245,158,11,0.18)"
+                    : "rgba(16,185,129,0.18)",
+                  totalInvoices === 0
+                    ? "rgba(0,0,0,0.70)"
+                    : isFullyLocked
+                    ? "#7f1d1d"
+                    : isPartiallyLocked
+                    ? "#7c2d12"
+                    : "#065f46"
                 )}
               >
                 {totalInvoices === 0
@@ -463,19 +485,19 @@ export default async function WavieFinanceiroPage({
                     <form action={closeMonthAction}>
                       <input type="hidden" name="month" value={month} />
                       <button
-                        disabled={totalInvoices === 0 || isFullyLocked}
+                        disabled={totalInvoices === 0 || isLockedAny}
                         style={{
                           padding: "12px 14px",
                           borderRadius: 14,
                           border: "1px solid rgba(0,0,0,0.14)",
-                          background: totalInvoices === 0 || isFullyLocked ? "rgba(0,0,0,0.15)" : "black",
+                          background: totalInvoices === 0 || isLockedAny ? "rgba(0,0,0,0.15)" : "black",
                           color: "white",
-                          cursor: totalInvoices === 0 || isFullyLocked ? "not-allowed" : "pointer",
+                          cursor: totalInvoices === 0 || isLockedAny ? "not-allowed" : "pointer",
                           fontWeight: 1000,
-                          minWidth: 160,
+                          minWidth: 170,
                         }}
                       >
-                        {isFullyLocked ? "Mês já fechado" : "Fechar mês"}
+                        {isFullyLocked ? "Mês já fechado" : isPartiallyLocked ? "Parcialmente fechado" : "Fechar mês"}
                       </button>
                     </form>
                   </div>
@@ -489,6 +511,12 @@ export default async function WavieFinanceiroPage({
                       Mês fechado. Alterações retroativas estão bloqueadas pelo banco.
                       <br />
                       Se precisar ajustar algo, o próximo passo é um fluxo de <b>override</b>.
+                    </>
+                  ) : isPartiallyLocked ? (
+                    <>
+                      Atenção: existe <b>lock parcial</b>. Isso normalmente indica que o lock foi aplicado com filtros/estado incompleto.
+                      <br />
+                      Recomendado: auditar e padronizar antes de seguir.
                     </>
                   ) : (
                     <>
