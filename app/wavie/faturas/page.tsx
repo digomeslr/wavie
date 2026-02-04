@@ -2,22 +2,20 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import RegisterPaymentModalClient from "./register-payment-modal-client";
 import { createInvoicePayment } from "./actions";
-
-type ClientRow = { id: string; name: string | null; slug: string | null };
+import RegisterPaymentModalClient from "./register-payment-modal-client";
 
 type InvoiceRow = {
   id: string;
   client_id: string | null;
-  month: string; // date
+  month: string; // date (YYYY-MM-DD)
   status: "open" | "sent" | "paid" | "void" | string;
   orders_count: number | null;
   gross_cents: number | null;
   wavie_fee_cents: number | null;
   created_at: string;
   paid_at: string | null;
-  clients?: { id: string; name: string | null; slug: string | null } | null;
+  clients?: { id: string; name: string | null; slug?: string | null } | null;
 };
 
 type PaymentRow = {
@@ -56,10 +54,6 @@ function parseStatusParam(s?: string | null) {
   return "all";
 }
 
-function safeMsg(s: unknown) {
-  return String(s ?? "").slice(0, 220);
-}
-
 async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
@@ -75,7 +69,7 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
   if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
-/** RPC mensal: sem throw (evita 500) */
+/** RPC mensal (gera/atualiza) */
 async function generateInvoiceForMonth(formData: FormData) {
   "use server";
 
@@ -85,43 +79,25 @@ async function generateInvoiceForMonth(formData: FormData) {
   const client_slug = String(formData.get("client_slug") ?? "").trim();
   const month = String(formData.get("month") ?? "").trim(); // YYYY-MM
 
-  if (!client_slug) redirect(`/wavie/faturas?gen_error=${encodeURIComponent("Selecione um cliente.")}`);
-  if (!/^\d{4}-\d{2}$/.test(month)) {
-    redirect(`/wavie/faturas?gen_error=${encodeURIComponent("Mês inválido (use YYYY-MM).")}`);
-  }
+  if (!client_slug) throw new Error("Cliente é obrigatório");
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new Error("Mês inválido (use YYYY-MM)");
 
   const month_date = firstDayOfMonthISO(month);
 
-  // tenta variações de args (robusto)
-  const attempts: Array<Record<string, any>> = [
-    { p_client_slug: client_slug, p_period_month: month_date },
-    { p_client_slug: client_slug, p_month: month_date },
-    { client_slug, period_month: month_date },
-    { client_slug, month: month_date },
-  ];
+  const { error } = await supabase.rpc("generate_invoice_for_month", {
+    p_client_slug: client_slug,
+    p_period_month: month_date,
+  });
 
-  let lastErr: string | null = null;
+  if (error) throw new Error(error.message);
 
-  for (const args of attempts) {
-    const { error } = await supabase.rpc("generate_invoice_for_month", args as any);
-    if (!error) {
-      revalidatePath("/wavie/faturas");
-      redirect(`/wavie/faturas?month=${encodeURIComponent(month)}&gen_ok=1`);
-    }
-    lastErr = error.message;
-  }
-
-  redirect(
-    `/wavie/faturas?month=${encodeURIComponent(month)}&gen_error=${encodeURIComponent(
-      safeMsg(lastErr ?? "Falha ao gerar fatura.")
-    )}`
-  );
+  revalidatePath("/wavie/faturas");
 }
 
 export default async function WavieFaturasPage({
   searchParams,
 }: {
-  searchParams?: { month?: string; status?: string; gen_ok?: string; gen_error?: string };
+  searchParams?: { month?: string; status?: string };
 }) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
@@ -130,20 +106,16 @@ export default async function WavieFaturasPage({
   const status = parseStatusParam(searchParams?.status);
   const month_date = firstDayOfMonthISO(month);
 
-  const genOk = searchParams?.gen_ok === "1";
-  const genError = searchParams?.gen_error ? decodeURIComponent(searchParams.gen_error) : null;
-
-  // select clientes
-  const { data: clientsRaw, error: cErr } = await supabase
+  // Clientes p/ select (slug)
+  const { data: clientsRaw, error: clientsErr } = await supabase
     .from("clients")
     .select("id,name,slug")
-    .order("name", { ascending: true })
-    .limit(500);
+    .order("name", { ascending: true });
 
-  if (cErr) redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(cErr.message))}`);
-  const clients: ClientRow[] = (clientsRaw ?? []) as any;
+  if (clientsErr) throw new Error(clientsErr.message);
+  const clients = (clientsRaw ?? []) as Array<{ id: string; name: string | null; slug: string | null }>;
 
-  // invoices (schema real)
+  // invoices do mês (coluna certa: month)
   let invQ = supabase
     .from("invoices")
     .select(
@@ -166,12 +138,12 @@ export default async function WavieFaturasPage({
   if (status !== "all") invQ = invQ.eq("status", status);
 
   const { data: invoicesRaw, error: invErr } = await invQ;
-  if (invErr) redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(invErr.message))}`);
+  if (invErr) throw new Error(invErr.message);
 
   const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
   const invoiceIds = invoices.map((i) => i.id);
 
-  // payments
+  // pagamentos das invoices
   let payments: PaymentRow[] = [];
   if (invoiceIds.length > 0) {
     const { data: pays, error: payErr } = await supabase
@@ -180,15 +152,15 @@ export default async function WavieFaturasPage({
       .in("invoice_id", invoiceIds)
       .order("paid_at", { ascending: false });
 
-    if (payErr) redirect(`/wavie/faturas?gen_error=${encodeURIComponent(safeMsg(payErr.message))}`);
+    if (payErr) throw new Error(payErr.message);
     payments = (pays ?? []) as any;
   }
 
-  // aggregates
+  // agrega pagamentos
   const paidByInvoice = new Map<string, number>();
   const countByInvoice = new Map<string, number>();
   for (const p of payments) {
-    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + Number(p.amount_cents ?? 0));
+    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + (p.amount_cents ?? 0));
     countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
   }
 
@@ -206,22 +178,9 @@ export default async function WavieFaturasPage({
           fontWeight: 900,
         }}
       >
-        ✅ BUILD MARKER: B15.4 / Faturas alinhadas ao schema (month/gross/wavie_fee)
+        ✅ BUILD MARKER: B15.2 / Faturas em produção
       </div>
 
-      {genOk ? (
-        <div style={{ padding: 12, borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "#ecfdf5", marginBottom: 12 }}>
-          ✅ Fatura gerada/atualizada com sucesso.
-        </div>
-      ) : null}
-
-      {genError ? (
-        <div style={{ padding: 12, borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "#fef2f2", marginBottom: 12 }}>
-          ❌ {genError}
-        </div>
-      ) : null}
-
-      {/* Header */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
@@ -261,16 +220,23 @@ export default async function WavieFaturasPage({
       <div style={{ height: 14 }} />
 
       {/* Gerar/Atualizar */}
-      <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
+      <div
+        style={{
+          padding: 14,
+          borderRadius: 16,
+          border: "1px solid rgba(0,0,0,0.12)",
+          background: "white",
+        }}
+      >
         <div style={{ fontSize: 16, fontWeight: 800 }}>Gerar/atualizar fatura do mês</div>
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-          RPC <code>generate_invoice_for_month</code> (cliente por <code>clients.slug</code>).
+          Usa a RPC <code>generate_invoice_for_month</code> (cliente por <code>clients.slug</code>).
         </div>
 
         <div style={{ height: 10 }} />
 
         <form action={generateInvoiceForMonth} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ display: "grid", gap: 6, minWidth: 360 }}>
+          <label style={{ display: "grid", gap: 6, minWidth: 280 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>Cliente</span>
             <select
               name="client_slug"
@@ -283,11 +249,11 @@ export default async function WavieFaturasPage({
               }}
             >
               <option value="" disabled>
-                Selecione…
+                Selecione...
               </option>
               {clients.map((c) => (
                 <option key={c.id} value={c.slug ?? ""} disabled={!c.slug}>
-                  {(c.name ?? c.slug ?? c.id) + (c.slug ? ` — (${c.slug})` : " — (sem slug)")}
+                  {(c.name ?? c.slug ?? c.id) + (c.slug ? "" : " (sem slug)")}
                 </option>
               ))}
             </select>
@@ -327,8 +293,15 @@ export default async function WavieFaturasPage({
 
       <div style={{ height: 14 }} />
 
-      {/* Lista */}
-      <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
+      {/* Filtros + CSV */}
+      <div
+        style={{
+          padding: 14,
+          borderRadius: 16,
+          border: "1px solid rgba(0,0,0,0.12)",
+          background: "white",
+        }}
+      >
         <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
           <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
 
@@ -377,7 +350,9 @@ export default async function WavieFaturasPage({
             </form>
 
             <Link
-              href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(status)}`}
+              href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(
+                status
+              )}`}
               style={{
                 padding: "8px 12px",
                 borderRadius: 10,
@@ -395,7 +370,14 @@ export default async function WavieFaturasPage({
         <div style={{ height: 16 }} />
 
         {invoices.length === 0 ? (
-          <div style={{ padding: 14, borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.02)" }}>
+          <div
+            style={{
+              padding: 14,
+              borderRadius: 14,
+              border: "1px solid rgba(0,0,0,0.12)",
+              background: "rgba(0,0,0,0.02)",
+            }}
+          >
             Nenhuma fatura encontrada para este filtro.
           </div>
         ) : (
@@ -404,27 +386,68 @@ export default async function WavieFaturasPage({
               const paid = paidByInvoice.get(inv.id) ?? 0;
               const cnt = countByInvoice.get(inv.id) ?? 0;
 
-              const gross = Number(inv.gross_cents ?? 0);
-              const fee = Number(inv.wavie_fee_cents ?? 0);
-              const due = Math.max(gross - fee, 0);
+              const gross = Number(inv.gross_cents ?? 0) || 0;
+              const fee = Number(inv.wavie_fee_cents ?? 0) || 0;
+
+              // “due” = gross_cents (você pode trocar para fee se quiser cobrar só a taxa)
+              const due = gross;
               const remaining = Math.max(due - paid, 0);
 
               return (
-                <div key={inv.id} style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-                  <div style={{ display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div
+                  key={inv.id}
+                  style={{
+                    padding: 14,
+                    borderRadius: 16,
+                    border: "1px solid rgba(0,0,0,0.12)",
+                    background: "white",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 12,
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <div style={{ minWidth: 260 }}>
                       <div style={{ fontSize: 14, opacity: 0.75 }}>Cliente</div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{inv.clients?.name ?? inv.client_id ?? "—"}</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>
+                        {inv.clients?.name ?? inv.client_id ?? "—"}
+                      </div>
 
                       <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                          }}
+                        >
                           status: <b>{inv.status}</b>
                         </span>
-                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
-                          pagamentos: <b>{cnt}</b>
-                        </span>
-                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                          }}
+                        >
                           pedidos: <b>{inv.orders_count ?? 0}</b>
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                          }}
+                        >
+                          pagamentos: <b>{cnt}</b>
                         </span>
                       </div>
                     </div>
@@ -440,10 +463,6 @@ export default async function WavieFaturasPage({
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(fee)}</div>
                         </div>
                         <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Total (due)</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
-                        </div>
-                        <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Pago</div>
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(paid)}</div>
                         </div>
@@ -453,7 +472,9 @@ export default async function WavieFaturasPage({
                         </div>
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Pago em</div>
-                          <div style={{ fontSize: 14 }}>{inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}</div>
+                          <div style={{ fontSize: 14 }}>
+                            {inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -488,7 +509,7 @@ export default async function WavieFaturasPage({
                             >
                               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                                 <span style={{ fontSize: 13 }}>
-                                  <b>{formatBRLFromCents(Number(p.amount_cents ?? 0))}</b>
+                                  <b>{formatBRLFromCents(p.amount_cents)}</b>
                                 </span>
                                 <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
                                 <span style={{ fontSize: 13, opacity: 0.8 }}>
@@ -525,10 +546,6 @@ function RegisterPaymentModal({
   defaultAmountCents: number;
 }) {
   return (
-    <RegisterPaymentModalClient
-      invoiceId={invoiceId}
-      defaultAmountCents={defaultAmountCents}
-      action={createInvoicePayment}
-    />
+    <RegisterPaymentModalClient invoiceId={invoiceId} defaultAmountCents={defaultAmountCents} action={createInvoicePayment} />
   );
 }
