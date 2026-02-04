@@ -23,8 +23,12 @@ function Card({
     >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-base font-semibold text-neutral-900">{title}</div>
-          <div className="mt-1 text-sm text-neutral-600">{desc}</div>
+          <div className="text-base font-semibold text-neutral-900">
+            {title}
+          </div>
+          <div className="mt-1 text-sm text-neutral-600">
+            {desc}
+          </div>
         </div>
         <div className="mt-0.5 text-neutral-400 group-hover:text-neutral-900 transition">
           →
@@ -85,7 +89,9 @@ export default function WavieHome() {
   if (checking) {
     return (
       <main className="min-h-screen bg-neutral-50 flex items-center justify-center p-6">
-        <div className="text-sm text-neutral-600">Verificando acesso…</div>
+        <div className="text-sm text-neutral-600">
+          Verificando acesso…
+        </div>
       </main>
     );
   }
@@ -99,7 +105,8 @@ export default function WavieHome() {
               Área interna Wavie
             </h1>
             <p className="mt-1 text-sm text-neutral-600">
-              Acesso autorizado <span className="font-medium">({role})</span>.
+              Acesso autorizado{" "}
+              <span className="font-medium">({role})</span>.
             </p>
           </div>
 
@@ -113,7 +120,9 @@ export default function WavieHome() {
 
         {/* Menu */}
         <section className="mt-6">
-          <h2 className="text-base font-semibold text-neutral-900">Menu</h2>
+          <h2 className="text-base font-semibold text-neutral-900">
+            Menu
+          </h2>
           <p className="mt-1 text-sm text-neutral-600">
             Acesse as áreas principais do backoffice.
           </p>
@@ -124,26 +133,45 @@ export default function WavieHome() {
               desc="Cadastro, status (trial/ativo/suspenso) e vínculo com barraca."
               href="/wavie/clientes"
             />
+
             <Card
               title="Planos"
               desc="Editar preço, comissão, modo de cobrança e ativação."
               href="/wavie/planos"
             />
+
             <Card
               title="Reajustes"
               desc="Reajuste geral (em massa), com log e filtros por serviço."
               href="/wavie/reajustes"
             />
+
             <Card
               title="Faturas"
               desc="Gerar/atualizar invoices por mês e marcar como sent/paid."
               href="/wavie/faturas"
             />
+
+            {/* ✅ NOVO */}
+            <Card
+              title="Financeiro"
+              desc="KPIs do mês, inadimplência e fechamento contábil (lock)."
+              href="/wavie/financeiro"
+            />
+
+            {/* ✅ NOVO */}
+            <Card
+              title="Cobrança"
+              desc="Assinaturas, modo manual/automático e tentativas (audit trail)."
+              href="/wavie/cobranca"
+            />
+
             <Card
               title="Abrir cardápio de uma barraca"
               desc="Acessar /b/[slug] para validar menu, checkout e operação."
               href="/b/nelsaodrinks"
             />
+
             <Card
               title="Painel operacional (global)"
               desc="Validar operação em tempo real (se aplicável)."
@@ -158,10 +186,11 @@ export default function WavieHome() {
             Observação importante
           </div>
           <p className="mt-1 text-sm text-neutral-600">
-            Planos afetam principalmente novos clientes. Clientes existentes usam{" "}
+            Planos afetam principalmente novos clientes. Clientes
+            existentes usam{" "}
             <span className="font-mono">snapshot</span> na{" "}
-            <span className="font-mono">subscriptions</span>. Reajustes em massa
-            alteram snapshots via RPC e ficam auditados em{" "}
+            <span className="font-mono">subscriptions</span>. Reajustes
+            em massa alteram snapshots via RPC e ficam auditados em{" "}
             <span className="font-mono">billing_adjustments</span>.
           </p>
         </section>
