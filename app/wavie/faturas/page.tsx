@@ -5,19 +5,18 @@ import { createClient } from "@/lib/supabase/server";
 import { createInvoicePayment } from "./actions";
 import RegisterPaymentModalClient from "./register-payment-modal-client";
 
+type ClientMini = { id: string; name: string | null; slug: string | null };
+
 type InvoiceRow = {
   id: string;
   client_id: string | null;
-  month?: string | null; // date (YYYY-MM-DD)
-  status?: string | null;
-  orders_count?: number | null;
-  gross_cents?: number | null;
-  wavie_fee_cents?: number | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  paid_at?: string | null;
-  notes?: string | null;
-  clients?: { id: string; name: string | null; slug?: string | null } | null;
+  month: string; // date (YYYY-MM-DD)
+  status: "open" | "sent" | "paid" | "void" | string;
+  gross_cents: number | null;
+  wavie_fee_cents: number | null;
+  created_at: string;
+  paid_at: string | null;
+  clients?: { id: string; name: string | null; slug: string | null } | null;
 };
 
 type PaymentRow = {
@@ -31,7 +30,7 @@ type PaymentRow = {
 };
 
 function formatBRLFromCents(cents: number) {
-  const v = (Number(cents ?? 0) || 0) / 100;
+  const v = (cents ?? 0) / 100;
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
@@ -42,6 +41,7 @@ function monthKey(d: Date) {
 }
 
 function firstDayOfMonthISO(month: string) {
+  // month = YYYY-MM  -> date string YYYY-MM-01
   return `${month}-01`;
 }
 
@@ -59,17 +59,18 @@ function parseStatusParam(s?: string | null) {
 async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
+    error: userErr,
   } = await supabase.auth.getUser();
 
-  if (!user) redirect("/wavie/login");
+  if (userErr || !user) redirect("/wavie/login");
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profErr } = await supabase
     .from("profiles")
     .select("role")
     .eq("user_id", user.id)
     .maybeSingle<{ role: string | null }>();
 
-  if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
+  if (profErr || !profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
 /** RPC mensal (gera/atualiza) */
@@ -79,6 +80,7 @@ async function generateInvoiceForMonth(formData: FormData) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
+  // vamos mandar slug para a RPC (como você já tinha)
   const client_slug = String(formData.get("client_slug") ?? "").trim();
   const month = String(formData.get("month") ?? "").trim(); // YYYY-MM
 
@@ -87,13 +89,15 @@ async function generateInvoiceForMonth(formData: FormData) {
 
   const month_date = firstDayOfMonthISO(month);
 
-  // mantém assinatura do RPC como estava no seu projeto
   const { error } = await supabase.rpc("generate_invoice_for_month", {
     p_client_slug: client_slug,
-    p_period_month: month_date,
+    p_period_month: month_date, // mantém compatível com o que já está no projeto
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error("WAVIE/FATURAS RPC generate_invoice_for_month FAILED:", error);
+    throw new Error("RPC_GENERATE_INVOICE_FOR_MONTH_FAILED");
+  }
 
   revalidatePath("/wavie/faturas");
 }
@@ -104,492 +108,455 @@ export default async function WavieFaturasPage({
   searchParams?: { month?: string; status?: string };
 }) {
   const supabase = await createClient();
-  await assertWavieAdminOrRedirect(supabase);
 
-  const month = parseMonthParam(searchParams?.month);
-  const status = parseStatusParam(searchParams?.status);
-  const month_date = firstDayOfMonthISO(month);
-
-  const statuses = ["all", "open", "sent", "paid", "void"] as const;
-
-  // ⚠️ Nunca mais derruba a página: tudo vira "warnings" e "fatalError"
-  const warnings: string[] = [];
-  let fatalError: string | null = null;
-
-  // --- 1) Clients (para o select) com fallback se slug não existir ---
-  let clients: Array<{ id: string; name: string | null; slug: string | null }> = [];
+  // ✅ log “hard” se algo explodir (pra Vercel mostrar sempre a causa)
   try {
-    const r1 = await supabase.from("clients").select("id,name,slug").order("name", { ascending: true });
-    if (r1.error) {
-      // fallback se a coluna slug não existir
-      if (String(r1.error.message || "").toLowerCase().includes("slug")) {
-        warnings.push("Coluna clients.slug não existe. Select de cliente vai mostrar só o nome/ID.");
-        const r2 = await supabase.from("clients").select("id,name").order("name", { ascending: true });
-        if (r2.error) throw new Error(r2.error.message);
-        clients = (r2.data ?? []).map((c: any) => ({ id: c.id, name: c.name ?? null, slug: null }));
-      } else {
-        throw new Error(r1.error.message);
-      }
-    } else {
-      clients = (r1.data ?? []).map((c: any) => ({ id: c.id, name: c.name ?? null, slug: c.slug ?? null }));
+    await assertWavieAdminOrRedirect(supabase);
+
+    const month = parseMonthParam(searchParams?.month);
+    const status = parseStatusParam(searchParams?.status);
+    const month_date = firstDayOfMonthISO(month);
+
+    // clientes para SELECT (slug)
+    const { data: clientsRaw, error: clientsErr } = await supabase
+      .from("clients")
+      .select("id,name,slug")
+      .order("name", { ascending: true });
+
+    if (clientsErr) {
+      console.error("WAVIE/FATURAS clients query FAILED:", clientsErr);
+      throw new Error("CLIENTS_QUERY_FAILED");
     }
-  } catch (e: any) {
-    fatalError = `Erro carregando clients: ${e?.message ?? String(e)}`;
-  }
 
-  // --- 2) Invoices (schema que você mandou) + fallback automático ---
-  let invoices: InvoiceRow[] = [];
-  try {
-    // tentativa “ideal” (schema atual)
-    const selectIdeal = [
-      "id",
-      "client_id",
-      "month",
-      "status",
-      "orders_count",
-      "gross_cents",
-      "wavie_fee_cents",
-      "created_at",
-      "updated_at",
-      "paid_at",
-      "notes",
-      "clients:clients(id,name,slug)",
-    ].join(",");
+    const clients: ClientMini[] = ((clientsRaw ?? []) as any).filter((c: any) => c?.slug);
 
-    let q: any = supabase.from("invoices").select(selectIdeal).eq("month", month_date).order("created_at", { ascending: false });
-    if (status !== "all") q = q.eq("status", status);
+    // invoices do mês: coluna correta é "month"
+    let invQ = supabase
+      .from("invoices")
+      .select(
+        [
+          "id",
+          "client_id",
+          "month",
+          "status",
+          "gross_cents",
+          "wavie_fee_cents",
+          "created_at",
+          "paid_at",
+          "clients:clients(id,name,slug)",
+        ].join(",")
+      )
+      .eq("month", month_date)
+      .order("created_at", { ascending: false });
 
-    const r1 = await q;
-    if (r1.error) {
-      // fallback: remove join clients e/ou campos se o schema não bater
-      warnings.push(`Invoices: fallback por erro no select ideal (${r1.error.message}).`);
-      const selectFallback = ["id", "client_id", "month", "status", "gross_cents", "wavie_fee_cents", "orders_count", "paid_at", "created_at"].join(",");
-      let q2: any = supabase.from("invoices").select(selectFallback).eq("month", month_date).order("created_at", { ascending: false });
-      if (status !== "all") q2 = q2.eq("status", status);
-      const r2 = await q2;
-      if (r2.error) throw new Error(r2.error.message);
-      invoices = (r2.data ?? []) as any;
-    } else {
-      invoices = (r1.data ?? []) as any;
+    if (status !== "all") invQ = invQ.eq("status", status);
+
+    const { data: invoicesRaw, error: invErr } = await invQ;
+    if (invErr) {
+      console.error("WAVIE/FATURAS invoices query FAILED:", invErr);
+      throw new Error("INVOICES_QUERY_FAILED");
     }
-  } catch (e: any) {
-    fatalError = fatalError ?? `Erro carregando invoices: ${e?.message ?? String(e)}`;
-  }
 
-  // --- 3) Payments (não derruba) ---
-  let payments: PaymentRow[] = [];
-  try {
-    const invoiceIds = invoices.map((i) => i.id).filter(Boolean);
+    const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
+    const invoiceIds = invoices.map((i) => i.id);
+
+    // pagamentos dessas invoices
+    let payments: PaymentRow[] = [];
     if (invoiceIds.length > 0) {
-      const r = await supabase
+      const { data: pays, error: payErr } = await supabase
         .from("invoice_payments")
         .select("id,invoice_id,amount_cents,method,paid_at,reference,notes")
         .in("invoice_id", invoiceIds)
         .order("paid_at", { ascending: false });
 
-      if (r.error) throw new Error(r.error.message);
-      payments = (r.data ?? []) as any;
+      if (payErr) {
+        console.error("WAVIE/FATURAS invoice_payments query FAILED:", payErr);
+        throw new Error("PAYMENTS_QUERY_FAILED");
+      }
+      payments = (pays ?? []) as any;
     }
-  } catch (e: any) {
-    warnings.push(`Erro carregando invoice_payments (lista pode ficar sem pagamentos): ${e?.message ?? String(e)}`);
-  }
 
-  // agrega pagamentos
-  const paidByInvoice = new Map<string, number>();
-  const countByInvoice = new Map<string, number>();
-  for (const p of payments) {
-    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + (p.amount_cents ?? 0));
-    countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
-  }
+    // agrega
+    const paidByInvoice = new Map<string, number>();
+    const countByInvoice = new Map<string, number>();
+    for (const p of payments) {
+      paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + (p.amount_cents ?? 0));
+      countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
+    }
 
-  return (
-    <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      {/* Marker */}
-      <div
-        style={{
-          padding: 12,
-          borderRadius: 14,
-          border: "2px solid #000",
-          background: "#fff3cd",
-          marginBottom: 12,
-          fontWeight: 900,
-        }}
-      >
-        ✅ BUILD MARKER: B15.2 / Faturas (anti-crash)
-      </div>
+    const statuses = ["all", "open", "sent", "paid", "void"] as const;
 
-      {/* Painel de diagnóstico (não derruba mais) */}
-      {(fatalError || warnings.length > 0) && (
+    return (
+      <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
+        {/* BUILD MARKER */}
         <div
           style={{
             padding: 12,
             borderRadius: 14,
-            border: "1px solid rgba(0,0,0,0.15)",
-            background: fatalError ? "#ffe2e2" : "#fff7d6",
+            border: "2px solid #000",
+            background: "#fff3cd",
             marginBottom: 12,
-            fontSize: 13,
-            lineHeight: 1.35,
+            fontWeight: 900,
           }}
         >
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>
-            {fatalError ? "❌ Erro (não deveria crashar mais)" : "⚠️ Avisos (fallbacks aplicados)"}
+          ✅ BUILD MARKER: B15.2 / Faturas em produção
+        </div>
+
+        {/* Header */}
+        <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
+            <p style={{ margin: "6px 0 0", opacity: 0.75 }}>
+              Mês: <b>{month}</b> • Status: <b>{status}</b>
+            </p>
           </div>
-          {fatalError ? <div style={{ whiteSpace: "pre-wrap" }}>{fatalError}</div> : null}
-          {warnings.length > 0 ? (
-            <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
-              {warnings.map((w, idx) => (
-                <li key={idx}>{w}</li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      )}
 
-      {/* Header */}
-      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
-          <p style={{ margin: "6px 0 0", opacity: 0.75 }}>
-            Mês: <b>{month}</b> • Status: <b>{status}</b>
-          </p>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <Link
-            href="/wavie"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.15)",
-              textDecoration: "none",
-              background: "white",
-            }}
-          >
-            Voltar
-          </Link>
-          <Link
-            href="/logout"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.15)",
-              textDecoration: "none",
-              background: "white",
-            }}
-          >
-            Sair
-          </Link>
-        </div>
-      </div>
-
-      <div style={{ height: 14 }} />
-
-      {/* Gerar/Atualizar */}
-      <div
-        style={{
-          padding: 14,
-          borderRadius: 16,
-          border: "1px solid rgba(0,0,0,0.12)",
-          background: "white",
-        }}
-      >
-        <div style={{ fontSize: 16, fontWeight: 800 }}>Gerar/atualizar fatura do mês</div>
-        <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-          Usa a RPC <code>generate_invoice_for_month</code> (cliente por <code>clients.slug</code>).
-        </div>
-
-        <div style={{ height: 10 }} />
-
-        <form action={generateInvoiceForMonth} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ display: "grid", gap: 6, minWidth: 320 }}>
-            <span style={{ fontSize: 12, opacity: 0.75 }}>Cliente</span>
-            <select
-              name="client_slug"
-              defaultValue=""
+          <div style={{ display: "flex", gap: 8 }}>
+            <Link
+              href="/wavie"
               style={{
-                padding: "10px 10px",
+                padding: "8px 12px",
                 borderRadius: 12,
                 border: "1px solid rgba(0,0,0,0.15)",
+                textDecoration: "none",
                 background: "white",
               }}
             >
-              <option value="" disabled>
-                Selecione...
-              </option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.slug ?? ""} disabled={!c.slug}>
-                  {(c.name ?? c.slug ?? c.id) + (c.slug ? "" : " (sem slug)")}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label style={{ display: "grid", gap: 6, minWidth: 220 }}>
-            <span style={{ fontSize: 12, opacity: 0.75 }}>Mês</span>
-            <input
-              name="month"
-              type="month"
-              defaultValue={month}
+              Voltar
+            </Link>
+            <Link
+              href="/logout"
               style={{
-                padding: "10px 10px",
+                padding: "8px 12px",
                 borderRadius: 12,
                 border: "1px solid rgba(0,0,0,0.15)",
-              }}
-            />
-          </label>
-
-          <div style={{ display: "flex", alignItems: "end" }}>
-            <button
-              style={{
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.15)",
-                background: "black",
-                color: "white",
-                cursor: "pointer",
-                minWidth: 200,
+                textDecoration: "none",
+                background: "white",
               }}
             >
-              Gerar/Atualizar
-            </button>
+              Sair
+            </Link>
           </div>
-        </form>
-      </div>
+        </div>
 
-      <div style={{ height: 14 }} />
+        <div style={{ height: 14 }} />
 
-      {/* Filtros + CSV */}
-      <div
-        style={{
-          padding: 14,
-          borderRadius: 16,
-          border: "1px solid rgba(0,0,0,0.12)",
-          background: "white",
-        }}
-      >
-        <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
+        {/* Gerar/Atualizar */}
+        <div
+          style={{
+            padding: 14,
+            borderRadius: 16,
+            border: "1px solid rgba(0,0,0,0.12)",
+            background: "white",
+          }}
+        >
+          <div style={{ fontSize: 16, fontWeight: 800 }}>Gerar/atualizar fatura do mês</div>
+          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+            Usa a RPC <code>generate_invoice_for_month</code> (cliente por <code>clients.slug</code>).
+          </div>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <form action="/wavie/faturas" method="get" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ height: 10 }} />
+
+          <form action={generateInvoiceForMonth} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <label style={{ display: "grid", gap: 6, minWidth: 280 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Cliente</span>
+              <select
+                name="client_slug"
+                defaultValue=""
+                required
+                style={{
+                  padding: "10px 10px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  background: "white",
+                }}
+              >
+                <option value="" disabled>
+                  Selecione...
+                </option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.slug ?? ""}>
+                    {c.name ?? c.slug}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ display: "grid", gap: 6, minWidth: 240 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Mês</span>
               <input
                 name="month"
                 type="month"
                 defaultValue={month}
                 style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
+                  padding: "10px 10px",
+                  borderRadius: 12,
                   border: "1px solid rgba(0,0,0,0.15)",
-                  width: 160,
                 }}
               />
+            </label>
 
-              <select
-                name="status"
-                defaultValue={status}
+            <div style={{ display: "flex", alignItems: "end" }}>
+              <button
                 style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
+                  padding: "10px 14px",
+                  borderRadius: 12,
                   border: "1px solid rgba(0,0,0,0.15)",
-                  background: "white",
+                  background: "black",
+                  color: "white",
+                  cursor: "pointer",
+                  minWidth: 200,
                 }}
               >
-                {statuses.map((s) => (
-                  <option key={s} value={s}>
-                    {s === "all" ? "Todos" : s}
-                  </option>
-                ))}
-              </select>
+                Gerar/Atualizar
+              </button>
+            </div>
+          </form>
+        </div>
 
-              <button
+        <div style={{ height: 14 }} />
+
+        {/* Filtros + CSV */}
+        <div
+          style={{
+            padding: 14,
+            borderRadius: 16,
+            border: "1px solid rgba(0,0,0,0.12)",
+            background: "white",
+          }}
+        >
+          <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+            <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <form action="/wavie/faturas" method="get" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  name="month"
+                  type="month"
+                  defaultValue={month}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    width: 160,
+                  }}
+                />
+
+                <select
+                  name="status"
+                  defaultValue={status}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    background: "white",
+                  }}
+                >
+                  {statuses.map((s) => (
+                    <option key={s} value={s}>
+                      {s === "all" ? "Todos" : s}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    background: "white",
+                    cursor: "pointer",
+                  }}
+                >
+                  Filtrar
+                </button>
+              </form>
+
+              <Link
+                href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(
+                  status
+                )}`}
                 style={{
                   padding: "8px 12px",
                   borderRadius: 10,
                   border: "1px solid rgba(0,0,0,0.15)",
+                  textDecoration: "none",
                   background: "white",
-                  cursor: "pointer",
+                  fontSize: 13,
                 }}
               >
-                Filtrar
-              </button>
-            </form>
+                Exportar CSV
+              </Link>
+            </div>
+          </div>
 
-            <Link
-              href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(status)}`}
+          <div style={{ height: 16 }} />
+
+          {invoices.length === 0 ? (
+            <div
               style={{
-                padding: "8px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(0,0,0,0.15)",
-                textDecoration: "none",
-                background: "white",
-                fontSize: 13,
+                padding: 14,
+                borderRadius: 14,
+                border: "1px solid rgba(0,0,0,0.12)",
+                background: "rgba(0,0,0,0.02)",
               }}
             >
-              Exportar CSV
-            </Link>
-          </div>
-        </div>
+              Nenhuma fatura encontrada para este filtro.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {invoices.map((inv) => {
+                const paid = paidByInvoice.get(inv.id) ?? 0;
+                const cnt = countByInvoice.get(inv.id) ?? 0;
 
-        <div style={{ height: 16 }} />
+                // ✅ total devido = wavie_fee_cents (seu schema tem esse campo)
+                const due = Number(inv.wavie_fee_cents ?? 0);
+                const gross = Number(inv.gross_cents ?? 0);
+                const remaining = Math.max(due - paid, 0);
 
-        {fatalError ? (
-          <div
-            style={{
-              padding: 14,
-              borderRadius: 14,
-              border: "1px solid rgba(0,0,0,0.12)",
-              background: "rgba(0,0,0,0.02)",
-            }}
-          >
-            Não consegui carregar dados por causa do erro acima.
-          </div>
-        ) : invoices.length === 0 ? (
-          <div
-            style={{
-              padding: 14,
-              borderRadius: 14,
-              border: "1px solid rgba(0,0,0,0.12)",
-              background: "rgba(0,0,0,0.02)",
-            }}
-          >
-            Nenhuma fatura encontrada para este filtro.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {invoices.map((inv) => {
-              const paid = paidByInvoice.get(inv.id) ?? 0;
-              const cnt = countByInvoice.get(inv.id) ?? 0;
-
-              const gross = Number(inv.gross_cents ?? 0) || 0;
-              const fee = Number(inv.wavie_fee_cents ?? 0) || 0;
-
-              // ✅ “due” = taxa Wavie (mais coerente pro teu caso)
-              const due = fee;
-
-              const remaining = Math.max(due - paid, 0);
-
-              return (
-                <div
-                  key={inv.id}
-                  style={{
-                    padding: 14,
-                    borderRadius: 16,
-                    border: "1px solid rgba(0,0,0,0.12)",
-                    background: "white",
-                  }}
-                >
+                return (
                   <div
+                    key={inv.id}
                     style={{
-                      display: "flex",
-                      gap: 12,
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      flexWrap: "wrap",
+                      padding: 14,
+                      borderRadius: 16,
+                      border: "1px solid rgba(0,0,0,0.12)",
+                      background: "white",
                     }}
                   >
-                    <div style={{ minWidth: 260 }}>
-                      <div style={{ fontSize: 14, opacity: 0.75 }}>Cliente</div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>
-                        {inv.clients?.name ?? inv.client_id ?? "—"}
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 12,
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ minWidth: 260 }}>
+                        <div style={{ fontSize: 14, opacity: 0.75 }}>Cliente</div>
+                        <div style={{ fontSize: 16, fontWeight: 700 }}>
+                          {inv.clients?.name ?? inv.clients?.slug ?? inv.client_id ?? "—"}
+                        </div>
+
+                        <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              padding: "4px 8px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(0,0,0,0.12)",
+                            }}
+                          >
+                            status: <b>{inv.status}</b>
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              padding: "4px 8px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(0,0,0,0.12)",
+                            }}
+                          >
+                            pagamentos: <b>{cnt}</b>
+                          </span>
+                        </div>
                       </div>
 
-                      <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
-                          status: <b>{inv.status ?? "—"}</b>
-                        </span>
-                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
-                          pedidos: <b>{inv.orders_count ?? 0}</b>
-                        </span>
-                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
-                          pagamentos: <b>{cnt}</b>
-                        </span>
-                      </div>
-                    </div>
+                      <div style={{ flex: 1, minWidth: 280 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                          <div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>Total (taxa Wavie)</div>
+                            <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
+                            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 2 }}>
+                              Bruto: {formatBRLFromCents(gross)}
+                            </div>
+                          </div>
 
-                    <div style={{ flex: 1, minWidth: 260 }}>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                        <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Bruto</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(gross)}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Taxa Wavie (devido)</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Pago</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(paid)}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Restante</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(remaining)}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Pago em</div>
-                          <div style={{ fontSize: 14 }}>
-                            {inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}
+                          <div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>Pago</div>
+                            <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(paid)}</div>
+                          </div>
+
+                          <div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>Restante</div>
+                            <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(remaining)}</div>
+                          </div>
+
+                          <div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>Pago em</div>
+                            <div style={{ fontSize: 14 }}>
+                              {inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Pagamentos</div>
-                    {payments.filter((p) => p.invoice_id === inv.id).length === 0 ? (
-                      <div style={{ fontSize: 13, opacity: 0.7 }}>Nenhum pagamento registrado.</div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 6 }}>
-                        {payments
-                          .filter((p) => p.invoice_id === inv.id)
-                          .slice(0, 6)
-                          .map((p) => (
-                            <div
-                              key={p.id}
-                              style={{
-                                padding: "10px 10px",
-                                borderRadius: 12,
-                                border: "1px solid rgba(0,0,0,0.10)",
-                                background: "rgba(0,0,0,0.02)",
-                                display: "flex",
-                                justifyContent: "space-between",
-                                gap: 10,
-                                flexWrap: "wrap",
-                              }}
-                            >
-                              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                                <span style={{ fontSize: 13 }}>
-                                  <b>{formatBRLFromCents(p.amount_cents)}</b>
-                                </span>
-                                <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
-                                <span style={{ fontSize: 13, opacity: 0.8 }}>
-                                  • {new Date(p.paid_at).toLocaleString("pt-BR")}
-                                </span>
-                              </div>
-                              <div style={{ fontSize: 13, opacity: 0.75 }}>
-                                {p.reference ? (
-                                  <>
-                                    ref: <b>{p.reference}</b>
-                                  </>
-                                ) : null}
-                              </div>
-                            </div>
-                          ))}
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <RegisterPaymentModal
+                          invoiceId={inv.id}
+                          defaultAmountCents={remaining > 0 ? remaining : due}
+                        />
                       </div>
-                    )}
+                    </div>
+
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Pagamentos</div>
+                      {payments.filter((p) => p.invoice_id === inv.id).length === 0 ? (
+                        <div style={{ fontSize: 13, opacity: 0.7 }}>Nenhum pagamento registrado.</div>
+                      ) : (
+                        <div style={{ display: "grid", gap: 6 }}>
+                          {payments
+                            .filter((p) => p.invoice_id === inv.id)
+                            .slice(0, 8)
+                            .map((p) => (
+                              <div
+                                key={p.id}
+                                style={{
+                                  padding: "10px 10px",
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(0,0,0,0.10)",
+                                  background: "rgba(0,0,0,0.02)",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  gap: 10,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                                  <span style={{ fontSize: 13 }}>
+                                    <b>{formatBRLFromCents(p.amount_cents)}</b>
+                                  </span>
+                                  <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
+                                  <span style={{ fontSize: 13, opacity: 0.8 }}>
+                                    • {new Date(p.paid_at).toLocaleString("pt-BR")}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 13, opacity: 0.75 }}>
+                                  {p.reference ? (
+                                    <>
+                                      ref: <b>{p.reference}</b>
+                                    </>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  } catch (e: any) {
+    // ✅ esse log aparece na Vercel SEMPRE (mesmo que a UI esconda a mensagem)
+    console.error("WAVIE/FATURAS SSR FATAL:", e);
+    throw e;
+  }
 }
 
 function RegisterPaymentModal({
