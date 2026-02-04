@@ -103,6 +103,23 @@ function divider() {
   return { height: 1, background: "rgba(0,0,0,0.08)", margin: "12px 0" };
 }
 
+/** ✅ Filtros robustos: server action + redirect (resolve “não navega / não muda mês”) */
+async function applyFiltersAction(formData: FormData) {
+  "use server";
+
+  const month = String(formData.get("month") ?? "").trim();
+  const status = String(formData.get("status") ?? "all").trim();
+
+  const allowed = new Set(["all", "open", "sent", "paid", "void"]);
+  const safeStatus = allowed.has(status) ? status : "all";
+
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    redirect(`/wavie/financeiro?month=${encodeURIComponent(monthKey(new Date()))}&status=${encodeURIComponent(safeStatus)}`);
+  }
+
+  redirect(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=${encodeURIComponent(safeStatus)}`);
+}
+
 async function closeMonthAction(formData: FormData) {
   "use server";
 
@@ -114,8 +131,6 @@ async function closeMonthAction(formData: FormData) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
-  // Fecha (lock) todas as invoices do mês que ainda não estiverem locked.
-  // Depois do lock, triggers no banco impedem mudanças (invoices e invoice_payments).
   const { error } = await supabase
     .from("invoices")
     .update({ locked_at: new Date().toISOString() })
@@ -128,12 +143,8 @@ async function closeMonthAction(formData: FormData) {
   }
 
   revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=all`);
-  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=open`);
-  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=sent`);
-  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=paid`);
   revalidatePath(`/wavie/faturas?month=${encodeURIComponent(month)}&status=all`);
-  revalidatePath(`/wavie/faturas?month=${encodeURIComponent(month)}&status=open`);
-  revalidatePath(`/wavie/faturas?month=${encodeURIComponent(month)}&status=paid`);
+  redirect(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=all`);
 }
 
 export default async function WavieFinanceiroPage({
@@ -250,7 +261,9 @@ export default async function WavieFinanceiroPage({
     .sort((a, b) => b.open - a.open)
     .slice(0, 12);
 
-  const paidPct = totalDue > 0 ? Math.round((totalPaid / totalDue) * 100) : 0;
+  // ✅ % recebido capped (nunca passa de 100%)
+  const paidForPct = Math.min(totalPaid, totalDue);
+  const paidPct = totalDue > 0 ? Math.round((paidForPct / totalDue) * 100) : 0;
 
   const bg = {
     background:
@@ -333,11 +346,7 @@ export default async function WavieFinanceiroPage({
           <div style={divider()} />
 
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-            <form
-              action="/wavie/financeiro"
-              method="get"
-              style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
-            >
+            <form action={applyFiltersAction} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <label style={{ display: "grid", gap: 6 }}>
                 <span style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Mês</span>
                 <input
@@ -395,7 +404,12 @@ export default async function WavieFinanceiroPage({
             </form>
 
             <div style={{ display: "flex", alignItems: "end" }}>
-              <span style={pill(isFullyLocked ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)", isFullyLocked ? "#065f46" : "#7c2d12")}>
+              <span
+                style={pill(
+                  isFullyLocked ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)",
+                  isFullyLocked ? "#065f46" : "#7c2d12"
+                )}
+              >
                 {totalInvoices === 0
                   ? "SEM FATURAS NO MÊS"
                   : isFullyLocked
@@ -416,7 +430,7 @@ export default async function WavieFinanceiroPage({
           <Kpi title="Devido à Wavie" value={formatBRLFromCents(totalDue)} hint="Soma de wavie_fee_cents no mês" />
           <Kpi title="Recebido (Wavie)" value={formatBRLFromCents(totalPaid)} hint="Soma de invoice_payments.amount_cents" />
           <Kpi title="Em aberto" value={formatBRLFromCents(totalOpen)} hint="Devido − Pago" />
-          <Kpi title="% Recebido" value={`${paidPct}%`} hint="Pago / Devido" />
+          <Kpi title="% Recebido" value={`${paidPct}%`} hint="Pago / Devido (cap em 100%)" />
           <Kpi title="Faturas no mês" value={`${invoices.length}`} hint="Quantidade de invoices no filtro" />
         </div>
 
@@ -445,13 +459,7 @@ export default async function WavieFinanceiroPage({
                   <div>
                     <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>STATUS DO MÊS</div>
                     <div style={{ fontSize: 18, fontWeight: 1000, marginTop: 2 }}>
-                      {totalInvoices === 0
-                        ? "Sem faturas"
-                        : isFullyLocked
-                        ? "Fechado"
-                        : isPartiallyLocked
-                        ? "Parcial"
-                        : "Aberto"}
+                      {totalInvoices === 0 ? "Sem faturas" : isFullyLocked ? "Fechado" : isPartiallyLocked ? "Parcial" : "Aberto"}
                     </div>
                     <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
                       Faturas locked: <b>{lockedCount}</b> / <b>{totalInvoices}</b>
@@ -487,7 +495,7 @@ export default async function WavieFinanceiroPage({
                     <>
                       Mês fechado. Alterações retroativas estão bloqueadas pelo banco.
                       <br />
-                      Se precisar ajustar algo, teremos que criar um fluxo de <b>override</b> (próximo passo).
+                      Se precisar ajustar algo, o próximo passo é um fluxo de <b>override</b>.
                     </>
                   ) : (
                     <>
