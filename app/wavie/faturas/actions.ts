@@ -19,15 +19,41 @@ function toCentsBRL(input: string): number {
   return Math.round(num * 100);
 }
 
-export async function createInvoicePayment(formData: FormData) {
-  const supabase = await createClient();
-
+async function assertWavieAdmin(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
     error: userErr,
   } = await supabase.auth.getUser();
 
-  if (userErr || !user) return { ok: false, error: "Unauthorized" };
+  if (userErr || !user) throw new Error("Unauthorized");
+
+  const { data: profile, error: profErr } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("user_id", user.id)
+    .maybeSingle<{ role: string | null }>();
+
+  if (profErr) throw new Error(profErr.message);
+  if (!profile || profile.role !== "wavie_admin") throw new Error("not allowed");
+
+  return user;
+}
+
+/**
+ * Registra pagamento manual em invoice_payments.
+ * ✅ O trigger do banco é o responsável por atualizar invoices.status e invoices.paid_at
+ * (ou seja: removemos qualquer heurística aqui).
+ */
+export async function createInvoicePayment(formData: FormData) {
+  const supabase = await createClient();
+
+  let userId: string;
+  try {
+    const user = await assertWavieAdmin(supabase);
+    userId = user.id;
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Unauthorized" };
+  }
 
   const invoice_id = String(formData.get("invoice_id") ?? "");
   const method = String(formData.get("method") ?? "pix");
@@ -54,49 +80,12 @@ export async function createInvoicePayment(formData: FormData) {
     paid_at: paidAtIso,
     reference,
     notes,
-    created_by: user.id,
+    created_by: userId,
   });
 
   if (error) return { ok: false, error: error.message };
 
-  // ✅ Recalcula status/paid_at da invoice no server (sem depender de trigger quebrado)
-  // due = gross_cents - wavie_fee_cents
-  const { data: inv, error: invErr } = await supabase
-    .from("invoices")
-    .select("id,gross_cents,wavie_fee_cents,paid_at,status")
-    .eq("id", invoice_id)
-    .maybeSingle<{
-      id: string;
-      gross_cents: number | null;
-      wavie_fee_cents: number | null;
-      paid_at: string | null;
-      status: string | null;
-    }>();
-
-  if (!invErr && inv) {
-    const gross = Number(inv.gross_cents ?? 0);
-    const fee = Number(inv.wavie_fee_cents ?? 0);
-    const due = Math.max(gross - fee, 0);
-
-    const { data: sums, error: sumErr } = await supabase
-      .from("invoice_payments")
-      .select("amount_cents")
-      .eq("invoice_id", invoice_id);
-
-    if (!sumErr) {
-      const paid = (sums ?? []).reduce((acc, r: any) => acc + Number(r.amount_cents ?? 0), 0);
-
-      const fullyPaid = due > 0 ? paid >= due : paid > 0; // se due=0, qualquer pagamento marca como paid
-      const nextStatus = fullyPaid ? "paid" : inv.status ?? "open";
-      const nextPaidAt = fullyPaid ? inv.paid_at ?? new Date().toISOString() : null;
-
-      await supabase
-        .from("invoices")
-        .update({ status: nextStatus, paid_at: nextPaidAt })
-        .eq("id", invoice_id);
-    }
-  }
-
+  // ✅ Nada de recomputar invoice aqui — o TRIGGER já faz isso no banco.
   revalidatePath("/wavie/faturas");
   return { ok: true };
 }
