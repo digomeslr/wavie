@@ -16,6 +16,7 @@ type InvoiceRow = {
   wavie_fee_cents: number | null;
   created_at: string;
   paid_at: string | null;
+  locked_at: string | null;
   clients?: { id: string; name: string | null; slug: string | null } | null;
 };
 
@@ -70,6 +71,19 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
     .maybeSingle<{ role: string | null }>();
 
   if (profErr || !profile || profile.role !== "wavie_admin") redirect("/wavie/login");
+}
+
+function pill(bg: string, fg: string) {
+  return {
+    fontSize: 12,
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: bg,
+    color: fg,
+    fontWeight: 800 as const,
+    letterSpacing: 0.2,
+  };
 }
 
 /** RPC mensal (gera/atualiza) — assinatura real: (p_client_id, p_month) */
@@ -141,6 +155,7 @@ export default async function WavieFaturasPage({
           "wavie_fee_cents",
           "created_at",
           "paid_at",
+          "locked_at",
           "clients:clients(id,name,slug)",
         ].join(",")
       )
@@ -157,6 +172,12 @@ export default async function WavieFaturasPage({
 
     const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
     const invoiceIds = invoices.map((i) => i.id);
+
+    // lock status do mês (qualquer invoice locked => mês “travado” para ações)
+    const lockedCount = invoices.filter((i) => i.locked_at).length;
+    const isLockedAny = lockedCount > 0;
+    const isFullyLocked = invoices.length > 0 && lockedCount === invoices.length;
+    const isPartiallyLocked = lockedCount > 0 && lockedCount < invoices.length;
 
     // pagamentos
     let payments: PaymentRow[] = [];
@@ -194,10 +215,10 @@ export default async function WavieFaturasPage({
             fontWeight: 900,
           }}
         >
-          ✅ BUILD MARKER: B15.4 / UI (Bruto, Devido, Pago, Restante) + status por trigger
+          ✅ BUILD MARKER: B15.5 / Lock UI (disabled actions) + locked_at
         </div>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap" }}>
           <div>
             <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
             <p style={{ margin: "6px 0 0", opacity: 0.75 }}>
@@ -206,6 +227,19 @@ export default async function WavieFaturasPage({
             <p style={{ margin: "6px 0 0", opacity: 0.7, fontSize: 12 }}>
               Bruto = vendas do cliente • Devido = taxa Wavie • Pago = recebido • Restante = saldo em aberto
             </p>
+
+            {isLockedAny ? (
+              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {isFullyLocked ? (
+                  <span style={pill("rgba(239,68,68,0.16)", "#7f1d1d")}>🔒 MÊS FECHADO</span>
+                ) : isPartiallyLocked ? (
+                  <span style={pill("rgba(245,158,11,0.18)", "#7c2d12")}>🔒 PARCIALMENTE FECHADO</span>
+                ) : null}
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>
+                  locked: <b>{lockedCount}</b> / <b>{invoices.length}</b>
+                </span>
+              </div>
+            ) : null}
           </div>
 
           <div style={{ display: "flex", gap: 8 }}>
@@ -239,9 +273,22 @@ export default async function WavieFaturasPage({
         <div style={{ height: 14 }} />
 
         <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>Gerar/atualizar fatura do mês</div>
-          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-            RPC <code>generate_invoice_for_month(p_client_id, p_month)</code>.
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 800 }}>Gerar/atualizar fatura do mês</div>
+              <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+                RPC <code>generate_invoice_for_month(p_client_id, p_month)</code>.
+              </div>
+              {isLockedAny ? (
+                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
+                  Este mês está <b>travado</b>. O banco bloqueia recalcular/alterar faturas e pagamentos.
+                </div>
+              ) : null}
+            </div>
+
+            {isLockedAny ? (
+              <span style={pill("rgba(239,68,68,0.12)", "#7f1d1d")}>🔒 Ações desabilitadas no mês fechado</span>
+            ) : null}
           </div>
 
           <div style={{ height: 10 }} />
@@ -253,11 +300,13 @@ export default async function WavieFaturasPage({
                 name="client_id"
                 defaultValue=""
                 required
+                disabled={isLockedAny}
                 style={{
                   padding: "10px 10px",
                   borderRadius: 12,
                   border: "1px solid rgba(0,0,0,0.15)",
-                  background: "white",
+                  background: isLockedAny ? "rgba(0,0,0,0.06)" : "white",
+                  cursor: isLockedAny ? "not-allowed" : "pointer",
                 }}
               >
                 <option value="" disabled>
@@ -277,27 +326,32 @@ export default async function WavieFaturasPage({
                 name="month"
                 type="month"
                 defaultValue={month}
+                disabled={isLockedAny}
                 style={{
                   padding: "10px 10px",
                   borderRadius: 12,
                   border: "1px solid rgba(0,0,0,0.15)",
+                  background: isLockedAny ? "rgba(0,0,0,0.06)" : "white",
+                  cursor: isLockedAny ? "not-allowed" : "text",
                 }}
               />
             </label>
 
             <div style={{ display: "flex", alignItems: "end" }}>
               <button
+                disabled={isLockedAny}
                 style={{
                   padding: "10px 14px",
                   borderRadius: 12,
                   border: "1px solid rgba(0,0,0,0.15)",
-                  background: "black",
+                  background: isLockedAny ? "rgba(0,0,0,0.15)" : "black",
                   color: "white",
-                  cursor: "pointer",
+                  cursor: isLockedAny ? "not-allowed" : "pointer",
                   minWidth: 200,
+                  fontWeight: 900,
                 }}
               >
-                Gerar/Atualizar
+                {isLockedAny ? "Mês fechado" : "Gerar/Atualizar"}
               </button>
             </div>
           </form>
@@ -403,6 +457,8 @@ export default async function WavieFaturasPage({
                 const remaining = Math.max(due - paid, 0);
                 const isPaid = inv.status === "paid" || (due > 0 && remaining === 0) || due === 0;
 
+                const isLocked = Boolean(inv.locked_at);
+
                 return (
                   <div
                     key={inv.id}
@@ -410,7 +466,7 @@ export default async function WavieFaturasPage({
                       padding: 14,
                       borderRadius: 16,
                       border: "1px solid rgba(0,0,0,0.12)",
-                      background: "white",
+                      background: isLocked ? "rgba(239,68,68,0.06)" : "white",
                     }}
                   >
                     <div
@@ -435,20 +491,27 @@ export default async function WavieFaturasPage({
                               padding: "4px 8px",
                               borderRadius: 999,
                               border: "1px solid rgba(0,0,0,0.12)",
+                              background: "white",
                             }}
                           >
                             status: <b>{isPaid ? "paid" : inv.status}</b>
                           </span>
+
                           <span
                             style={{
                               fontSize: 12,
                               padding: "4px 8px",
                               borderRadius: 999,
                               border: "1px solid rgba(0,0,0,0.12)",
+                              background: "white",
                             }}
                           >
                             pagamentos: <b>{cnt}</b>
                           </span>
+
+                          {isLocked ? (
+                            <span style={pill("rgba(239,68,68,0.16)", "#7f1d1d")}>🔒 FATURA BLOQUEADA</span>
+                          ) : null}
                         </div>
                       </div>
 
@@ -480,14 +543,37 @@ export default async function WavieFaturasPage({
                               {inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}
                             </div>
                           </div>
+
+                          {isLocked ? (
+                            <div>
+                              <div style={{ fontSize: 12, opacity: 0.75 }}>Bloqueado em</div>
+                              <div style={{ fontSize: 14 }}>{new Date(inv.locked_at as string).toLocaleString("pt-BR")}</div>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
 
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <RegisterPaymentModal
-                          invoiceId={inv.id}
-                          defaultAmountCents={remaining > 0 ? remaining : due}
-                        />
+                        {isLocked ? (
+                          <button
+                            disabled
+                            style={{
+                              padding: "10px 14px",
+                              borderRadius: 12,
+                              border: "1px solid rgba(0,0,0,0.15)",
+                              background: "rgba(0,0,0,0.10)",
+                              color: "rgba(0,0,0,0.65)",
+                              cursor: "not-allowed",
+                              fontWeight: 900,
+                              minWidth: 200,
+                            }}
+                            title="Mês fechado: pagamentos bloqueados pelo banco"
+                          >
+                            🔒 Mês fechado
+                          </button>
+                        ) : (
+                          <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
+                        )}
                       </div>
                     </div>
 
@@ -563,10 +649,6 @@ function RegisterPaymentModal({
   defaultAmountCents: number;
 }) {
   return (
-    <RegisterPaymentModalClient
-      invoiceId={invoiceId}
-      defaultAmountCents={defaultAmountCents}
-      action={createInvoicePayment}
-    />
+    <RegisterPaymentModalClient invoiceId={invoiceId} defaultAmountCents={defaultAmountCents} action={createInvoicePayment} />
   );
 }
