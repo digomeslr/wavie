@@ -8,13 +8,15 @@ import RegisterPaymentModalClient from "./register-payment-modal-client";
 type InvoiceRow = {
   id: string;
   client_id: string | null;
-  month: string; // date (YYYY-MM-DD)
-  status: "open" | "sent" | "paid" | "void" | string;
-  orders_count: number | null;
-  gross_cents: number | null;
-  wavie_fee_cents: number | null;
-  created_at: string;
-  paid_at: string | null;
+  month?: string | null; // date (YYYY-MM-DD)
+  status?: string | null;
+  orders_count?: number | null;
+  gross_cents?: number | null;
+  wavie_fee_cents?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  paid_at?: string | null;
+  notes?: string | null;
   clients?: { id: string; name: string | null; slug?: string | null } | null;
 };
 
@@ -58,6 +60,7 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
   if (!user) redirect("/wavie/login");
 
   const { data: profile } = await supabase
@@ -84,6 +87,7 @@ async function generateInvoiceForMonth(formData: FormData) {
 
   const month_date = firstDayOfMonthISO(month);
 
+  // mantém assinatura do RPC como estava no seu projeto
   const { error } = await supabase.rpc("generate_invoice_for_month", {
     p_client_slug: client_slug,
     p_period_month: month_date,
@@ -106,54 +110,88 @@ export default async function WavieFaturasPage({
   const status = parseStatusParam(searchParams?.status);
   const month_date = firstDayOfMonthISO(month);
 
-  // Clientes p/ select (slug)
-  const { data: clientsRaw, error: clientsErr } = await supabase
-    .from("clients")
-    .select("id,name,slug")
-    .order("name", { ascending: true });
+  const statuses = ["all", "open", "sent", "paid", "void"] as const;
 
-  if (clientsErr) throw new Error(clientsErr.message);
-  const clients = (clientsRaw ?? []) as Array<{ id: string; name: string | null; slug: string | null }>;
+  // ⚠️ Nunca mais derruba a página: tudo vira "warnings" e "fatalError"
+  const warnings: string[] = [];
+  let fatalError: string | null = null;
 
-  // invoices do mês (coluna certa: month)
-  let invQ = supabase
-    .from("invoices")
-    .select(
-      [
-        "id",
-        "client_id",
-        "month",
-        "status",
-        "orders_count",
-        "gross_cents",
-        "wavie_fee_cents",
-        "created_at",
-        "paid_at",
-        "clients:clients(id,name,slug)",
-      ].join(",")
-    )
-    .eq("month", month_date)
-    .order("created_at", { ascending: false });
+  // --- 1) Clients (para o select) com fallback se slug não existir ---
+  let clients: Array<{ id: string; name: string | null; slug: string | null }> = [];
+  try {
+    const r1 = await supabase.from("clients").select("id,name,slug").order("name", { ascending: true });
+    if (r1.error) {
+      // fallback se a coluna slug não existir
+      if (String(r1.error.message || "").toLowerCase().includes("slug")) {
+        warnings.push("Coluna clients.slug não existe. Select de cliente vai mostrar só o nome/ID.");
+        const r2 = await supabase.from("clients").select("id,name").order("name", { ascending: true });
+        if (r2.error) throw new Error(r2.error.message);
+        clients = (r2.data ?? []).map((c: any) => ({ id: c.id, name: c.name ?? null, slug: null }));
+      } else {
+        throw new Error(r1.error.message);
+      }
+    } else {
+      clients = (r1.data ?? []).map((c: any) => ({ id: c.id, name: c.name ?? null, slug: c.slug ?? null }));
+    }
+  } catch (e: any) {
+    fatalError = `Erro carregando clients: ${e?.message ?? String(e)}`;
+  }
 
-  if (status !== "all") invQ = invQ.eq("status", status);
+  // --- 2) Invoices (schema que você mandou) + fallback automático ---
+  let invoices: InvoiceRow[] = [];
+  try {
+    // tentativa “ideal” (schema atual)
+    const selectIdeal = [
+      "id",
+      "client_id",
+      "month",
+      "status",
+      "orders_count",
+      "gross_cents",
+      "wavie_fee_cents",
+      "created_at",
+      "updated_at",
+      "paid_at",
+      "notes",
+      "clients:clients(id,name,slug)",
+    ].join(",");
 
-  const { data: invoicesRaw, error: invErr } = await invQ;
-  if (invErr) throw new Error(invErr.message);
+    let q: any = supabase.from("invoices").select(selectIdeal).eq("month", month_date).order("created_at", { ascending: false });
+    if (status !== "all") q = q.eq("status", status);
 
-  const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
-  const invoiceIds = invoices.map((i) => i.id);
+    const r1 = await q;
+    if (r1.error) {
+      // fallback: remove join clients e/ou campos se o schema não bater
+      warnings.push(`Invoices: fallback por erro no select ideal (${r1.error.message}).`);
+      const selectFallback = ["id", "client_id", "month", "status", "gross_cents", "wavie_fee_cents", "orders_count", "paid_at", "created_at"].join(",");
+      let q2: any = supabase.from("invoices").select(selectFallback).eq("month", month_date).order("created_at", { ascending: false });
+      if (status !== "all") q2 = q2.eq("status", status);
+      const r2 = await q2;
+      if (r2.error) throw new Error(r2.error.message);
+      invoices = (r2.data ?? []) as any;
+    } else {
+      invoices = (r1.data ?? []) as any;
+    }
+  } catch (e: any) {
+    fatalError = fatalError ?? `Erro carregando invoices: ${e?.message ?? String(e)}`;
+  }
 
-  // pagamentos das invoices
+  // --- 3) Payments (não derruba) ---
   let payments: PaymentRow[] = [];
-  if (invoiceIds.length > 0) {
-    const { data: pays, error: payErr } = await supabase
-      .from("invoice_payments")
-      .select("id,invoice_id,amount_cents,method,paid_at,reference,notes")
-      .in("invoice_id", invoiceIds)
-      .order("paid_at", { ascending: false });
+  try {
+    const invoiceIds = invoices.map((i) => i.id).filter(Boolean);
+    if (invoiceIds.length > 0) {
+      const r = await supabase
+        .from("invoice_payments")
+        .select("id,invoice_id,amount_cents,method,paid_at,reference,notes")
+        .in("invoice_id", invoiceIds)
+        .order("paid_at", { ascending: false });
 
-    if (payErr) throw new Error(payErr.message);
-    payments = (pays ?? []) as any;
+      if (r.error) throw new Error(r.error.message);
+      payments = (r.data ?? []) as any;
+    }
+  } catch (e: any) {
+    warnings.push(`Erro carregando invoice_payments (lista pode ficar sem pagamentos): ${e?.message ?? String(e)}`);
   }
 
   // agrega pagamentos
@@ -164,10 +202,9 @@ export default async function WavieFaturasPage({
     countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
   }
 
-  const statuses = ["all", "open", "sent", "paid", "void"] as const;
-
   return (
     <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
+      {/* Marker */}
       <div
         style={{
           padding: 12,
@@ -178,9 +215,37 @@ export default async function WavieFaturasPage({
           fontWeight: 900,
         }}
       >
-        ✅ BUILD MARKER: B15.2 / Faturas em produção
+        ✅ BUILD MARKER: B15.2 / Faturas (anti-crash)
       </div>
 
+      {/* Painel de diagnóstico (não derruba mais) */}
+      {(fatalError || warnings.length > 0) && (
+        <div
+          style={{
+            padding: 12,
+            borderRadius: 14,
+            border: "1px solid rgba(0,0,0,0.15)",
+            background: fatalError ? "#ffe2e2" : "#fff7d6",
+            marginBottom: 12,
+            fontSize: 13,
+            lineHeight: 1.35,
+          }}
+        >
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>
+            {fatalError ? "❌ Erro (não deveria crashar mais)" : "⚠️ Avisos (fallbacks aplicados)"}
+          </div>
+          {fatalError ? <div style={{ whiteSpace: "pre-wrap" }}>{fatalError}</div> : null}
+          {warnings.length > 0 ? (
+            <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+              {warnings.map((w, idx) => (
+                <li key={idx}>{w}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
+
+      {/* Header */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
@@ -236,7 +301,7 @@ export default async function WavieFaturasPage({
         <div style={{ height: 10 }} />
 
         <form action={generateInvoiceForMonth} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ display: "grid", gap: 6, minWidth: 280 }}>
+          <label style={{ display: "grid", gap: 6, minWidth: 320 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>Cliente</span>
             <select
               name="client_slug"
@@ -350,9 +415,7 @@ export default async function WavieFaturasPage({
             </form>
 
             <Link
-              href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(
-                status
-              )}`}
+              href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(status)}`}
               style={{
                 padding: "8px 12px",
                 borderRadius: 10,
@@ -369,7 +432,18 @@ export default async function WavieFaturasPage({
 
         <div style={{ height: 16 }} />
 
-        {invoices.length === 0 ? (
+        {fatalError ? (
+          <div
+            style={{
+              padding: 14,
+              borderRadius: 14,
+              border: "1px solid rgba(0,0,0,0.12)",
+              background: "rgba(0,0,0,0.02)",
+            }}
+          >
+            Não consegui carregar dados por causa do erro acima.
+          </div>
+        ) : invoices.length === 0 ? (
           <div
             style={{
               padding: 14,
@@ -389,8 +463,9 @@ export default async function WavieFaturasPage({
               const gross = Number(inv.gross_cents ?? 0) || 0;
               const fee = Number(inv.wavie_fee_cents ?? 0) || 0;
 
-              // “due” = gross_cents (você pode trocar para fee se quiser cobrar só a taxa)
-              const due = gross;
+              // ✅ “due” = taxa Wavie (mais coerente pro teu caso)
+              const due = fee;
+
               const remaining = Math.max(due - paid, 0);
 
               return (
@@ -419,34 +494,13 @@ export default async function WavieFaturasPage({
                       </div>
 
                       <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid rgba(0,0,0,0.12)",
-                          }}
-                        >
-                          status: <b>{inv.status}</b>
+                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
+                          status: <b>{inv.status ?? "—"}</b>
                         </span>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid rgba(0,0,0,0.12)",
-                          }}
-                        >
+                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
                           pedidos: <b>{inv.orders_count ?? 0}</b>
                         </span>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid rgba(0,0,0,0.12)",
-                          }}
-                        >
+                        <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
                           pagamentos: <b>{cnt}</b>
                         </span>
                       </div>
@@ -459,8 +513,8 @@ export default async function WavieFaturasPage({
                           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(gross)}</div>
                         </div>
                         <div>
-                          <div style={{ fontSize: 12, opacity: 0.75 }}>Taxa Wavie</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(fee)}</div>
+                          <div style={{ fontSize: 12, opacity: 0.75 }}>Taxa Wavie (devido)</div>
+                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
                         </div>
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.75 }}>Pago</div>
@@ -546,6 +600,10 @@ function RegisterPaymentModal({
   defaultAmountCents: number;
 }) {
   return (
-    <RegisterPaymentModalClient invoiceId={invoiceId} defaultAmountCents={defaultAmountCents} action={createInvoicePayment} />
+    <RegisterPaymentModalClient
+      invoiceId={invoiceId}
+      defaultAmountCents={defaultAmountCents}
+      action={createInvoicePayment}
+    />
   );
 }
