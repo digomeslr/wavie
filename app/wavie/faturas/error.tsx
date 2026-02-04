@@ -10,7 +10,6 @@ export default function WavieFaturasError({
   reset: () => void;
 }) {
   useEffect(() => {
-    // ajuda a ver no console do browser também
     console.error("WAVIE FATURAS ERROR:", error);
   }, [error]);
 
@@ -54,11 +53,10 @@ export default function WavieFaturasError({
         </div>
 
         <div className="mt-4 text-xs text-neutral-500">
-          Próximo passo depois do deploy: abrir Vercel Logs e pegar a linha do erro real
-          (ex.: coluna faltando, RPC falhando, permissão etc.). Aí corrigimos de vez.
+          Próximo passo: abrir Vercel Logs e pegar a linha do erro real (ex.:
+          coluna faltando, RPC falhando, permissão etc.). Aí corrigimos de vez.
         </div>
       </div>
     </main>
-  </div>
   );
 }
