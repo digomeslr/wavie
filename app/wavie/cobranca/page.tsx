@@ -35,6 +35,8 @@ type AttemptRow = {
   created_at: string;
 };
 
+type SeedResult = { ok: true; created: number; skipped: number } | { ok: false; error: string };
+
 /* ===================== Helpers ===================== */
 
 function formatBRLFromCents(cents: number) {
@@ -44,22 +46,21 @@ function formatBRLFromCents(cents: number) {
   });
 }
 
-async function assertWavieAdminOrRedirect(
-  supabase: Awaited<ReturnType<typeof createClient>>
-) {
+async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
+    error: userErr,
   } = await supabase.auth.getUser();
 
-  if (!user) redirect("/wavie/login");
+  if (userErr || !user) redirect("/wavie/login");
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profErr } = await supabase
     .from("profiles")
     .select("role")
     .eq("user_id", user.id)
     .maybeSingle<{ role: string | null }>();
 
-  if (!profile || profile.role !== "wavie_admin") redirect("/wavie/login");
+  if (profErr || !profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
 /* ===================== Server Actions ===================== */
@@ -87,6 +88,50 @@ async function togglePaymentModeAction(formData: FormData) {
   }
 
   revalidatePath("/wavie/cobranca");
+}
+
+/** ✅ Seed idempotente: cria 1 subscription por client que não tem */
+async function seedSubscriptionsAction(): Promise<SeedResult> {
+  "use server";
+
+  const supabase = await createClient();
+  await assertWavieAdminOrRedirect(supabase);
+
+  // pega todos os clients
+  const { data: clients, error: cErr } = await supabase.from("clients").select("id");
+  if (cErr) return { ok: false, error: cErr.message };
+
+  const clientIds: string[] = (clients ?? []).map((c: any) => c.id).filter(Boolean);
+  if (clientIds.length === 0) return { ok: true, created: 0, skipped: 0 };
+
+  // pega subscriptions existentes (para evitar conflito/ruído)
+  const { data: subs, error: sErr } = await supabase.from("billing_subscriptions").select("client_id");
+  if (sErr) return { ok: false, error: sErr.message };
+
+  const existing = new Set<string>((subs ?? []).map((r: any) => r.client_id).filter(Boolean));
+  const toCreate = clientIds.filter((id) => !existing.has(id));
+
+  if (toCreate.length === 0) {
+    revalidatePath("/wavie/cobranca");
+    return { ok: true, created: 0, skipped: clientIds.length };
+  }
+
+  const payload = toCreate.map((client_id) => ({
+    client_id,
+    status: "active",
+    billing_cycle: "monthly",
+    payment_mode: "manual",
+    provider: null,
+    provider_customer_id: null,
+    provider_subscription_id: null,
+    default_payment_method: null,
+  }));
+
+  const { error: insErr } = await supabase.from("billing_subscriptions").insert(payload);
+  if (insErr) return { ok: false, error: insErr.message };
+
+  revalidatePath("/wavie/cobranca");
+  return { ok: true, created: toCreate.length, skipped: existing.size };
 }
 
 /* ===================== Page ===================== */
@@ -136,7 +181,13 @@ export default async function WavieCobrancaPage() {
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <form action={seedSubscriptionsAction}>
+              <button style={btnDark()}>
+                Criar assinaturas para clientes existentes
+              </button>
+            </form>
+
             <Link href="/wavie/financeiro" style={btn()}>
               Financeiro
             </Link>
@@ -148,16 +199,32 @@ export default async function WavieCobrancaPage() {
             </Link>
           </div>
         </div>
+
+        <div style={{ height: 10 }} />
+
+        <div style={{ fontSize: 12, opacity: 0.75 }}>
+          Dica: se esta página estiver vazia, clique em{" "}
+          <b>“Criar assinaturas…”</b>. Isso é idempotente (não duplica).
+        </div>
       </div>
 
       <div style={{ height: 14 }} />
 
       {/* Subscriptions */}
       <div style={card()}>
-        <h2 style={{ marginTop: 0 }}>Assinaturas por cliente</h2>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0 }}>Assinaturas por cliente</h2>
+          <div style={{ fontSize: 13, opacity: 0.75 }}>
+            Total: <b>{subscriptions.length}</b>
+          </div>
+        </div>
+
+        <div style={{ height: 10 }} />
 
         {subscriptions.length === 0 ? (
-          <p>Nenhuma assinatura encontrada.</p>
+          <p style={{ margin: 0, fontSize: 13, opacity: 0.75 }}>
+            Nenhuma assinatura encontrada. Clique em <b>“Criar assinaturas…”</b> no topo.
+          </p>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
             {subscriptions.map((s) => {
@@ -174,6 +241,12 @@ export default async function WavieCobrancaPage() {
                       </div>
                       <div style={{ fontSize: 12, opacity: 0.7 }}>
                         Provider: <b>{s.provider ?? "—"}</b>
+                        {s.provider_customer_id ? (
+                          <>
+                            {" "}
+                            • customer: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{s.provider_customer_id}</span>
+                          </>
+                        ) : null}
                       </div>
                     </div>
 
@@ -205,7 +278,7 @@ export default async function WavieCobrancaPage() {
         <h2 style={{ marginTop: 0 }}>Tentativas de cobrança (audit trail)</h2>
 
         {attempts.length === 0 ? (
-          <p>Nenhuma tentativa registrada.</p>
+          <p style={{ margin: 0, fontSize: 13, opacity: 0.75 }}>Nenhuma tentativa registrada.</p>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
             {attempts.map((a) => (
