@@ -182,8 +182,6 @@ export default async function WavieFaturasPage({
       countByInvoice.set(p.invoice_id, (countByInvoice.get(p.invoice_id) ?? 0) + 1);
     }
 
-    const statuses = ["all", "open", "sent", "paid", "void"] as const;
-
     return (
       <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
         <div
@@ -196,7 +194,7 @@ export default async function WavieFaturasPage({
             fontWeight: 900,
           }}
         >
-          ✅ BUILD MARKER: B15.3 / RPC corrigida (p_client_id, p_month)
+          ✅ BUILD MARKER: B15.4 / UI (Bruto, Devido, Pago, Restante) + status por trigger
         </div>
 
         <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
@@ -204,6 +202,9 @@ export default async function WavieFaturasPage({
             <h1 style={{ fontSize: 22, margin: 0 }}>Faturas</h1>
             <p style={{ margin: "6px 0 0", opacity: 0.75 }}>
               Mês: <b>{month}</b> • Status: <b>{status}</b>
+            </p>
+            <p style={{ margin: "6px 0 0", opacity: 0.7, fontSize: 12 }}>
+              Bruto = vendas do cliente • Devido = taxa Wavie • Pago = recebido • Restante = saldo em aberto
             </p>
           </div>
 
@@ -305,7 +306,15 @@ export default async function WavieFaturasPage({
         <div style={{ height: 14 }} />
 
         <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-          <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+            }}
+          >
             <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -373,7 +382,14 @@ export default async function WavieFaturasPage({
           <div style={{ height: 16 }} />
 
           {invoices.length === 0 ? (
-            <div style={{ padding: 14, borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.02)" }}>
+            <div
+              style={{
+                padding: 14,
+                borderRadius: 14,
+                border: "1px solid rgba(0,0,0,0.12)",
+                background: "rgba(0,0,0,0.02)",
+              }}
+            >
               Nenhuma fatura encontrada para este filtro.
             </div>
           ) : (
@@ -382,13 +398,30 @@ export default async function WavieFaturasPage({
                 const paid = paidByInvoice.get(inv.id) ?? 0;
                 const cnt = countByInvoice.get(inv.id) ?? 0;
 
-                const due = Number(inv.wavie_fee_cents ?? 0);
-                const gross = Number(inv.gross_cents ?? 0);
+                const due = Number(inv.wavie_fee_cents ?? 0); // ✅ devido à Wavie
+                const gross = Number(inv.gross_cents ?? 0); // bruto do cliente
                 const remaining = Math.max(due - paid, 0);
+                const isPaid = inv.status === "paid" || (due > 0 && remaining === 0) || due === 0;
 
                 return (
-                  <div key={inv.id} style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap" }}>
+                  <div
+                    key={inv.id}
+                    style={{
+                      padding: 14,
+                      borderRadius: 16,
+                      border: "1px solid rgba(0,0,0,0.12)",
+                      background: "white",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 12,
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                      }}
+                    >
                       <div style={{ minWidth: 260 }}>
                         <div style={{ fontSize: 14, opacity: 0.75 }}>Cliente</div>
                         <div style={{ fontSize: 16, fontWeight: 700 }}>
@@ -396,10 +429,24 @@ export default async function WavieFaturasPage({
                         </div>
 
                         <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
-                            status: <b>{inv.status}</b>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              padding: "4px 8px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(0,0,0,0.12)",
+                            }}
+                          >
+                            status: <b>{isPaid ? "paid" : inv.status}</b>
                           </span>
-                          <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)" }}>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              padding: "4px 8px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(0,0,0,0.12)",
+                            }}
+                          >
                             pagamentos: <b>{cnt}</b>
                           </span>
                         </div>
@@ -408,9 +455,13 @@ export default async function WavieFaturasPage({
                       <div style={{ flex: 1, minWidth: 280 }}>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                           <div>
-                            <div style={{ fontSize: 12, opacity: 0.75 }}>Total (taxa Wavie)</div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>Bruto do cliente</div>
+                            <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(gross)}</div>
+                          </div>
+
+                          <div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>Devido à Wavie</div>
                             <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRLFromCents(due)}</div>
-                            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 2 }}>Bruto: {formatBRLFromCents(gross)}</div>
                           </div>
 
                           <div>
@@ -425,13 +476,18 @@ export default async function WavieFaturasPage({
 
                           <div>
                             <div style={{ fontSize: 12, opacity: 0.75 }}>Pago em</div>
-                            <div style={{ fontSize: 14 }}>{inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}</div>
+                            <div style={{ fontSize: 14 }}>
+                              {inv.paid_at ? new Date(inv.paid_at).toLocaleString("pt-BR") : "—"}
+                            </div>
                           </div>
                         </div>
                       </div>
 
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
+                        <RegisterPaymentModal
+                          invoiceId={inv.id}
+                          defaultAmountCents={remaining > 0 ? remaining : due}
+                        />
                       </div>
                     </div>
 
@@ -463,12 +519,20 @@ export default async function WavieFaturasPage({
                                     <b>{formatBRLFromCents(p.amount_cents)}</b>
                                   </span>
                                   <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
-                                  <span style={{ fontSize: 13, opacity: 0.8 }}>• {new Date(p.paid_at).toLocaleString("pt-BR")}</span>
+                                  <span style={{ fontSize: 13, opacity: 0.8 }}>
+                                    • {new Date(p.paid_at).toLocaleString("pt-BR")}
+                                  </span>
                                 </div>
                                 <div style={{ fontSize: 13, opacity: 0.75 }}>
                                   {p.reference ? (
                                     <>
                                       ref: <b>{p.reference}</b>
+                                    </>
+                                  ) : null}
+                                  {p.notes ? (
+                                    <>
+                                      {p.reference ? " • " : ""}
+                                      {p.notes}
                                     </>
                                   ) : null}
                                 </div>
