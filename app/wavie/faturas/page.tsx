@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createInvoicePayment } from "./actions";
 import RegisterPaymentModalClient from "./register-payment-modal-client";
+import UnlockButtonClient from "./unlock-button-client";
 
 type ClientMini = { id: string; name: string | null; slug: string | null };
 
@@ -209,7 +210,7 @@ export default async function WavieFaturasPage({
     const invoices: InvoiceRow[] = (invoicesRaw ?? []) as any;
     const invoiceIds = invoices.map((i) => i.id);
 
-    // lock status do mês (qualquer invoice locked => mês “travado” para ações)
+    // lock status do mês
     const lockedCount = invoices.filter((i) => i.locked_at).length;
     const isLockedAny = lockedCount > 0;
     const isFullyLocked = invoices.length > 0 && lockedCount === invoices.length;
@@ -231,7 +232,7 @@ export default async function WavieFaturasPage({
       payments = (pays ?? []) as any;
     }
 
-    // overrides (últimos 300 no mês, depois agregamos por invoice)
+    // overrides (não quebra a página se der erro)
     let overrides: OverrideRow[] = [];
     if (invoiceIds.length > 0) {
       const { data: ovs, error: ovErr } = await supabase
@@ -241,13 +242,8 @@ export default async function WavieFaturasPage({
         .order("created_at", { ascending: false })
         .limit(300);
 
-      if (ovErr) {
-        console.error("WAVIE/FATURAS invoice_overrides query FAILED:", ovErr);
-        // não quebra a página inteira — só não mostra overrides
-        overrides = [];
-      } else {
-        overrides = (ovs ?? []) as any;
-      }
+      if (!ovErr) overrides = (ovs ?? []) as any;
+      else overrides = [];
     }
 
     // agrega payments
@@ -278,7 +274,7 @@ export default async function WavieFaturasPage({
             fontWeight: 900,
           }}
         >
-          ✅ BUILD MARKER: D2 / Override UI (unlock_invoice + log)
+          ✅ BUILD MARKER: D2.1 / Fix SSR (UnlockButton virou Client Component)
         </div>
 
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap" }}>
@@ -423,15 +419,7 @@ export default async function WavieFaturasPage({
         <div style={{ height: 14 }} />
 
         <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              alignItems: "center",
-              justifyContent: "space-between",
-              flexWrap: "wrap",
-            }}
-          >
+          <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
             <div style={{ fontSize: 16, fontWeight: 800 }}>Lista de faturas</div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -479,9 +467,7 @@ export default async function WavieFaturasPage({
               </form>
 
               <Link
-                href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(
-                  status
-                )}`}
+                href={`/api/wavie/invoices/export.csv?month=${encodeURIComponent(month)}&status=${encodeURIComponent(status)}`}
                 style={{
                   padding: "8px 12px",
                   borderRadius: 10,
@@ -499,14 +485,7 @@ export default async function WavieFaturasPage({
           <div style={{ height: 16 }} />
 
           {invoices.length === 0 ? (
-            <div
-              style={{
-                padding: 14,
-                borderRadius: 14,
-                border: "1px solid rgba(0,0,0,0.12)",
-                background: "rgba(0,0,0,0.02)",
-              }}
-            >
+            <div style={{ padding: 14, borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.02)" }}>
               Nenhuma fatura encontrada para este filtro.
             </div>
           ) : (
@@ -541,27 +520,11 @@ export default async function WavieFaturasPage({
                         </div>
 
                         <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          <span
-                            style={{
-                              fontSize: 12,
-                              padding: "4px 8px",
-                              borderRadius: 999,
-                              border: "1px solid rgba(0,0,0,0.12)",
-                              background: "white",
-                            }}
-                          >
+                          <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
                             status: <b>{isPaid ? "paid" : inv.status}</b>
                           </span>
 
-                          <span
-                            style={{
-                              fontSize: 12,
-                              padding: "4px 8px",
-                              borderRadius: 999,
-                              border: "1px solid rgba(0,0,0,0.12)",
-                              background: "white",
-                            }}
-                          >
+                          <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
                             pagamentos: <b>{cnt}</b>
                           </span>
 
@@ -608,7 +571,7 @@ export default async function WavieFaturasPage({
                       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         {isLocked ? (
                           <>
-                            <UnlockButton invoiceId={inv.id} action={unlockInvoiceAction} />
+                            <UnlockButtonClient invoiceId={inv.id} action={unlockInvoiceAction} />
                             <button
                               disabled
                               style={{
@@ -630,55 +593,6 @@ export default async function WavieFaturasPage({
                           <RegisterPaymentModal invoiceId={inv.id} defaultAmountCents={remaining > 0 ? remaining : due} />
                         )}
                       </div>
-                    </div>
-
-                    <div style={{ marginTop: 12 }}>
-                      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Pagamentos</div>
-                      {payments.filter((p) => p.invoice_id === inv.id).length === 0 ? (
-                        <div style={{ fontSize: 13, opacity: 0.7 }}>Nenhum pagamento registrado.</div>
-                      ) : (
-                        <div style={{ display: "grid", gap: 6 }}>
-                          {payments
-                            .filter((p) => p.invoice_id === inv.id)
-                            .slice(0, 8)
-                            .map((p) => (
-                              <div
-                                key={p.id}
-                                style={{
-                                  padding: "10px 10px",
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(0,0,0,0.10)",
-                                  background: "rgba(0,0,0,0.02)",
-                                  display: "flex",
-                                  justifyContent: "space-between",
-                                  gap: 10,
-                                  flexWrap: "wrap",
-                                }}
-                              >
-                                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                                  <span style={{ fontSize: 13 }}>
-                                    <b>{formatBRLFromCents(p.amount_cents)}</b>
-                                  </span>
-                                  <span style={{ fontSize: 13, opacity: 0.8 }}>• {p.method}</span>
-                                  <span style={{ fontSize: 13, opacity: 0.8 }}>• {new Date(p.paid_at).toLocaleString("pt-BR")}</span>
-                                </div>
-                                <div style={{ fontSize: 13, opacity: 0.75 }}>
-                                  {p.reference ? (
-                                    <>
-                                      ref: <b>{p.reference}</b>
-                                    </>
-                                  ) : null}
-                                  {p.notes ? (
-                                    <>
-                                      {p.reference ? " • " : ""}
-                                      {p.notes}
-                                    </>
-                                  ) : null}
-                                </div>
-                              </div>
-                            ))}
-                        </div>
-                      )}
                     </div>
 
                     <div style={{ marginTop: 12 }}>
@@ -735,53 +649,4 @@ function RegisterPaymentModal({
   defaultAmountCents: number;
 }) {
   return <RegisterPaymentModalClient invoiceId={invoiceId} defaultAmountCents={defaultAmountCents} action={createInvoicePayment} />;
-}
-
-/**
- * Botão client-side simples para pedir motivo e submeter server action
- * (sem depender de libs/modais).
- */
-function UnlockButton({
-  invoiceId,
-  action,
-}: {
-  invoiceId: string;
-  action: (formData: FormData) => Promise<void>;
-}) {
-  return (
-    <form
-      action={action}
-      onSubmit={(e) => {
-        // o "prompt" é só no client; o form ainda executa server action
-        const reason = window.prompt("Motivo para desbloquear esta fatura (obrigatório):");
-        if (!reason || reason.trim().length < 5) {
-          e.preventDefault();
-          alert("Motivo obrigatório (mínimo 5 caracteres).");
-          return;
-        }
-        // injeta motivo num input hidden
-        const form = e.currentTarget as HTMLFormElement;
-        const input = form.querySelector('input[name="reason"]') as HTMLInputElement | null;
-        if (input) input.value = reason.trim();
-      }}
-    >
-      <input type="hidden" name="invoice_id" value={invoiceId} />
-      <input type="hidden" name="reason" value="" />
-      <button
-        type="submit"
-        style={{
-          padding: "10px 14px",
-          borderRadius: 12,
-          border: "1px solid rgba(0,0,0,0.15)",
-          background: "white",
-          cursor: "pointer",
-          fontWeight: 900,
-          minWidth: 200,
-        }}
-        title="Override auditável: exige motivo e registra log"
-      >
-        🔓 Desbloquear (override)
-      </button>
-    </form>
-  );
 }
