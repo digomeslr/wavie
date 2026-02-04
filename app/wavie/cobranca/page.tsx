@@ -35,8 +35,6 @@ type AttemptRow = {
   created_at: string;
 };
 
-type SeedResult = { ok: true; created: number; skipped: number } | { ok: false; error: string };
-
 /* ===================== Helpers ===================== */
 
 function formatBRLFromCents(cents: number) {
@@ -90,8 +88,12 @@ async function togglePaymentModeAction(formData: FormData) {
   revalidatePath("/wavie/cobranca");
 }
 
-/** ✅ Seed idempotente: cria 1 subscription por client que não tem */
-async function seedSubscriptionsAction(): Promise<SeedResult> {
+/**
+ * ✅ Seed idempotente: cria 1 subscription por client que não tem.
+ * IMPORTANTE: Server Action em <form action={...}> deve retornar void/Promise<void>
+ * então a gente finaliza com redirect incluindo um "flash" via querystring.
+ */
+async function seedSubscriptionsAction() {
   "use server";
 
   const supabase = await createClient();
@@ -99,21 +101,27 @@ async function seedSubscriptionsAction(): Promise<SeedResult> {
 
   // pega todos os clients
   const { data: clients, error: cErr } = await supabase.from("clients").select("id");
-  if (cErr) return { ok: false, error: cErr.message };
+  if (cErr) {
+    redirect(`/wavie/cobranca?seed=error&msg=${encodeURIComponent(cErr.message)}`);
+  }
 
   const clientIds: string[] = (clients ?? []).map((c: any) => c.id).filter(Boolean);
-  if (clientIds.length === 0) return { ok: true, created: 0, skipped: 0 };
+  if (clientIds.length === 0) {
+    redirect(`/wavie/cobranca?seed=ok&c=0&s=0`);
+  }
 
-  // pega subscriptions existentes (para evitar conflito/ruído)
+  // subscriptions existentes
   const { data: subs, error: sErr } = await supabase.from("billing_subscriptions").select("client_id");
-  if (sErr) return { ok: false, error: sErr.message };
+  if (sErr) {
+    redirect(`/wavie/cobranca?seed=error&msg=${encodeURIComponent(sErr.message)}`);
+  }
 
   const existing = new Set<string>((subs ?? []).map((r: any) => r.client_id).filter(Boolean));
   const toCreate = clientIds.filter((id) => !existing.has(id));
 
   if (toCreate.length === 0) {
     revalidatePath("/wavie/cobranca");
-    return { ok: true, created: 0, skipped: clientIds.length };
+    redirect(`/wavie/cobranca?seed=ok&c=0&s=${encodeURIComponent(String(clientIds.length))}`);
   }
 
   const payload = toCreate.map((client_id) => ({
@@ -128,17 +136,34 @@ async function seedSubscriptionsAction(): Promise<SeedResult> {
   }));
 
   const { error: insErr } = await supabase.from("billing_subscriptions").insert(payload);
-  if (insErr) return { ok: false, error: insErr.message };
+  if (insErr) {
+    redirect(`/wavie/cobranca?seed=error&msg=${encodeURIComponent(insErr.message)}`);
+  }
 
   revalidatePath("/wavie/cobranca");
-  return { ok: true, created: toCreate.length, skipped: existing.size };
+  redirect(`/wavie/cobranca?seed=ok&c=${encodeURIComponent(String(toCreate.length))}&s=${encodeURIComponent(String(existing.size))}`);
 }
 
 /* ===================== Page ===================== */
 
-export default async function WavieCobrancaPage() {
+export default async function WavieCobrancaPage({
+  searchParams,
+}: {
+  // Next 16 pode entregar Promise
+  searchParams?: Promise<{ seed?: string; c?: string; s?: string; msg?: string }> | { seed?: string; c?: string; s?: string; msg?: string };
+}) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
+
+  const sp =
+    searchParams && typeof (searchParams as any).then === "function"
+      ? await (searchParams as Promise<{ seed?: string; c?: string; s?: string; msg?: string }>)
+      : (searchParams as { seed?: string; c?: string; s?: string; msg?: string } | undefined);
+
+  const seed = String(sp?.seed ?? "");
+  const created = Number(sp?.c ?? 0);
+  const skipped = Number(sp?.s ?? 0);
+  const msg = String(sp?.msg ?? "");
 
   // Subscriptions + Client
   const { data: subsRaw, error: subsErr } = await supabase
@@ -183,9 +208,7 @@ export default async function WavieCobrancaPage() {
 
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <form action={seedSubscriptionsAction}>
-              <button style={btnDark()}>
-                Criar assinaturas para clientes existentes
-              </button>
+              <button style={btnDark()}>Criar assinaturas para clientes existentes</button>
             </form>
 
             <Link href="/wavie/financeiro" style={btn()}>
@@ -202,10 +225,20 @@ export default async function WavieCobrancaPage() {
 
         <div style={{ height: 10 }} />
 
-        <div style={{ fontSize: 12, opacity: 0.75 }}>
-          Dica: se esta página estiver vazia, clique em{" "}
-          <b>“Criar assinaturas…”</b>. Isso é idempotente (não duplica).
-        </div>
+        {/* Flash banner */}
+        {seed === "ok" ? (
+          <div style={bannerOk()}>
+            ✅ Seed concluído • Criadas: <b>{created}</b> • Já existiam: <b>{skipped}</b>
+          </div>
+        ) : seed === "error" ? (
+          <div style={bannerErr()}>
+            ❌ Seed falhou • {msg || "erro desconhecido"}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, opacity: 0.75 }}>
+            Dica: se esta página estiver vazia, clique em <b>“Criar assinaturas…”</b>. Isso é idempotente (não duplica).
+          </div>
+        )}
       </div>
 
       <div style={{ height: 14 }} />
@@ -244,7 +277,10 @@ export default async function WavieCobrancaPage() {
                         {s.provider_customer_id ? (
                           <>
                             {" "}
-                            • customer: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{s.provider_customer_id}</span>
+                            • customer:{" "}
+                            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                              {s.provider_customer_id}
+                            </span>
                           </>
                         ) : null}
                       </div>
@@ -258,9 +294,7 @@ export default async function WavieCobrancaPage() {
                       <form action={togglePaymentModeAction}>
                         <input type="hidden" name="subscription_id" value={s.id} />
                         <input type="hidden" name="next_mode" value={nextMode} />
-                        <button style={btnDark()}>
-                          Trocar para {nextMode.toUpperCase()}
-                        </button>
+                        <button style={btnDark()}>Trocar para {nextMode.toUpperCase()}</button>
                       </form>
                     </div>
                   </div>
@@ -287,16 +321,12 @@ export default async function WavieCobrancaPage() {
                   <div style={{ fontSize: 13 }}>
                     <b>{a.provider}</b> • {a.method} • {formatBRLFromCents(a.amount_cents)}
                   </div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>
-                    {new Date(a.created_at).toLocaleString("pt-BR")}
-                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>{new Date(a.created_at).toLocaleString("pt-BR")}</div>
                 </div>
 
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontWeight: 900 }}>{a.status}</div>
-                  {a.error_message && (
-                    <div style={{ fontSize: 12, color: "#b91c1c" }}>{a.error_message}</div>
-                  )}
+                  {a.error_message && <div style={{ fontSize: 12, color: "#b91c1c" }}>{a.error_message}</div>}
                 </div>
               </div>
             ))}
@@ -365,11 +395,7 @@ function pill(bg: string) {
 
 function attemptRow(status: string) {
   const color =
-    status === "succeeded"
-      ? "#dcfce7"
-      : status === "failed"
-      ? "#fee2e2"
-      : "#fef3c7";
+    status === "succeeded" ? "#dcfce7" : status === "failed" ? "#fee2e2" : "#fef3c7";
 
   return {
     padding: 12,
@@ -379,5 +405,27 @@ function attemptRow(status: string) {
     display: "flex",
     justifyContent: "space-between",
     gap: 12,
+  } as const;
+}
+
+function bannerOk() {
+  return {
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "rgba(16,185,129,0.14)",
+    fontSize: 13,
+    fontWeight: 800,
+  } as const;
+}
+
+function bannerErr() {
+  return {
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "rgba(239,68,68,0.12)",
+    fontSize: 13,
+    fontWeight: 800,
   } as const;
 }
