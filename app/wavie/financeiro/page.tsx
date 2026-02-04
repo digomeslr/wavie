@@ -103,7 +103,7 @@ function divider() {
   return { height: 1, background: "rgba(0,0,0,0.08)", margin: "12px 0" };
 }
 
-/** ✅ Filtros robustos: server action + redirect (resolve “não navega / não muda mês”) */
+/** ✅ Filtros robustos: server action + redirect */
 async function applyFiltersAction(formData: FormData) {
   "use server";
 
@@ -112,12 +112,9 @@ async function applyFiltersAction(formData: FormData) {
 
   const allowed = new Set(["all", "open", "sent", "paid", "void"]);
   const safeStatus = allowed.has(status) ? status : "all";
+  const safeMonth = /^\d{4}-\d{2}$/.test(month) ? month : monthKey(new Date());
 
-  if (!/^\d{4}-\d{2}$/.test(month)) {
-    redirect(`/wavie/financeiro?month=${encodeURIComponent(monthKey(new Date()))}&status=${encodeURIComponent(safeStatus)}`);
-  }
-
-  redirect(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=${encodeURIComponent(safeStatus)}`);
+  redirect(`/wavie/financeiro?month=${encodeURIComponent(safeMonth)}&status=${encodeURIComponent(safeStatus)}`);
 }
 
 async function closeMonthAction(formData: FormData) {
@@ -150,13 +147,19 @@ async function closeMonthAction(formData: FormData) {
 export default async function WavieFinanceiroPage({
   searchParams,
 }: {
-  searchParams?: { month?: string; status?: string };
+  // ✅ Next 16: searchParams pode vir como Promise
+  searchParams?: Promise<{ month?: string; status?: string }> | { month?: string; status?: string };
 }) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
 
-  const month = parseMonthParam(searchParams?.month);
-  const status = parseStatusParam(searchParams?.status);
+  const sp =
+    searchParams && typeof (searchParams as any).then === "function"
+      ? await (searchParams as Promise<{ month?: string; status?: string }>)
+      : (searchParams as { month?: string; status?: string } | undefined);
+
+  const month = parseMonthParam(sp?.month);
+  const status = parseStatusParam(sp?.status);
   const month_date = firstDayOfMonthISO(month);
 
   // invoices do mês (com client)
@@ -221,19 +224,12 @@ export default async function WavieFinanceiroPage({
   const isPartiallyLocked = lockedCount > 0 && lockedCount < totalInvoices;
 
   // inadimplência por cliente
-  type Debtor = {
-    clientId: string;
-    clientName: string;
-    due: number;
-    paid: number;
-    open: number;
-    invoices: number;
-  };
+  type Debtor = { clientId: string; clientName: string; due: number; paid: number; open: number; invoices: number };
   const debtorByClient = new Map<string, Debtor>();
 
   for (const inv of invoices) {
     const gross = Number(inv.gross_cents ?? 0);
-    const due = Number(inv.wavie_fee_cents ?? 0); // devido à Wavie
+    const due = Number(inv.wavie_fee_cents ?? 0);
     const paid = paidByInvoice.get(inv.id) ?? 0;
     const open = Math.max(due - paid, 0);
 
@@ -246,9 +242,8 @@ export default async function WavieFinanceiroPage({
     const clientName = inv.clients?.name ?? inv.clients?.slug ?? inv.client_id ?? "—";
 
     const prev = debtorByClient.get(clientId);
-    if (!prev) {
-      debtorByClient.set(clientId, { clientId, clientName, due, paid, open, invoices: 1 });
-    } else {
+    if (!prev) debtorByClient.set(clientId, { clientId, clientName, due, paid, open, invoices: 1 });
+    else {
       prev.due += due;
       prev.paid += paid;
       prev.open += open;
@@ -261,7 +256,7 @@ export default async function WavieFinanceiroPage({
     .sort((a, b) => b.open - a.open)
     .slice(0, 12);
 
-  // ✅ % recebido capped (nunca passa de 100%)
+  // ✅ % recebido capped
   const paidForPct = Math.min(totalPaid, totalDue);
   const paidPct = totalDue > 0 ? Math.round((paidForPct / totalDue) * 100) : 0;
 
@@ -424,7 +419,6 @@ export default async function WavieFinanceiroPage({
 
         <div style={{ height: 14 }} />
 
-        {/* KPIs */}
         <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
           <Kpi title="Bruto (clientes)" value={formatBRLFromCents(totalGross)} hint="Soma de gross_cents no mês" />
           <Kpi title="Devido à Wavie" value={formatBRLFromCents(totalDue)} hint="Soma de wavie_fee_cents no mês" />
@@ -436,7 +430,6 @@ export default async function WavieFinanceiroPage({
 
         <div style={{ height: 14 }} />
 
-        {/* Fechamento do mês */}
         <div style={card()}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div>
@@ -512,7 +505,6 @@ export default async function WavieFinanceiroPage({
 
         <div style={{ height: 14 }} />
 
-        {/* Inadimplentes */}
         <div style={card()}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div>
