@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-
-type ClientMini = { id: string; name: string | null; slug: string | null };
 
 type InvoiceRow = {
   id: string;
@@ -13,6 +12,7 @@ type InvoiceRow = {
   wavie_fee_cents: number | null;
   paid_at: string | null;
   created_at: string;
+  locked_at: string | null;
   clients?: { id: string; name: string | null; slug: string | null } | null;
 };
 
@@ -67,6 +67,75 @@ async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof cr
   if (profErr || !profile || profile.role !== "wavie_admin") redirect("/wavie/login");
 }
 
+function pill(bg: string, fg: string) {
+  return {
+    fontSize: 12,
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: bg,
+    color: fg,
+    fontWeight: 800 as const,
+    letterSpacing: 0.2,
+  };
+}
+
+function card() {
+  return {
+    padding: 16,
+    borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "white",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.06)",
+  };
+}
+
+function subtleCard() {
+  return {
+    padding: 16,
+    borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "rgba(0,0,0,0.02)",
+  };
+}
+
+function divider() {
+  return { height: 1, background: "rgba(0,0,0,0.08)", margin: "12px 0" };
+}
+
+async function closeMonthAction(formData: FormData) {
+  "use server";
+
+  const month = String(formData.get("month") ?? "").trim();
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new Error("Mês inválido");
+
+  const month_date = firstDayOfMonthISO(month);
+
+  const supabase = await createClient();
+  await assertWavieAdminOrRedirect(supabase);
+
+  // Fecha (lock) todas as invoices do mês que ainda não estiverem locked.
+  // Depois do lock, triggers no banco impedem mudanças (invoices e invoice_payments).
+  const { error } = await supabase
+    .from("invoices")
+    .update({ locked_at: new Date().toISOString() })
+    .eq("month", month_date)
+    .is("locked_at", null);
+
+  if (error) {
+    console.error("WAVIE/FINANCEIRO closeMonthAction FAILED:", error);
+    throw new Error("CLOSE_MONTH_FAILED");
+  }
+
+  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=all`);
+  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=open`);
+  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=sent`);
+  revalidatePath(`/wavie/financeiro?month=${encodeURIComponent(month)}&status=paid`);
+  revalidatePath(`/wavie/faturas?month=${encodeURIComponent(month)}&status=all`);
+  revalidatePath(`/wavie/faturas?month=${encodeURIComponent(month)}&status=open`);
+  revalidatePath(`/wavie/faturas?month=${encodeURIComponent(month)}&status=paid`);
+}
+
 export default async function WavieFinanceiroPage({
   searchParams,
 }: {
@@ -92,6 +161,7 @@ export default async function WavieFinanceiroPage({
         "wavie_fee_cents",
         "paid_at",
         "created_at",
+        "locked_at",
         "clients:clients(id,name,slug)",
       ].join(",")
     )
@@ -133,13 +203,26 @@ export default async function WavieFinanceiroPage({
   let totalPaid = 0;
   let totalOpen = 0;
 
+  // lock status do mês
+  const totalInvoices = invoices.length;
+  const lockedCount = invoices.filter((i) => i.locked_at).length;
+  const isFullyLocked = totalInvoices > 0 && lockedCount === totalInvoices;
+  const isPartiallyLocked = lockedCount > 0 && lockedCount < totalInvoices;
+
   // inadimplência por cliente
-  type Debtor = { clientId: string; clientName: string; due: number; paid: number; open: number; invoices: number };
+  type Debtor = {
+    clientId: string;
+    clientName: string;
+    due: number;
+    paid: number;
+    open: number;
+    invoices: number;
+  };
   const debtorByClient = new Map<string, Debtor>();
 
   for (const inv of invoices) {
     const gross = Number(inv.gross_cents ?? 0);
-    const due = Number(inv.wavie_fee_cents ?? 0);
+    const due = Number(inv.wavie_fee_cents ?? 0); // devido à Wavie
     const paid = paidByInvoice.get(inv.id) ?? 0;
     const open = Math.max(due - paid, 0);
 
@@ -151,10 +234,9 @@ export default async function WavieFinanceiroPage({
     const clientId = inv.client_id ?? "—";
     const clientName = inv.clients?.name ?? inv.clients?.slug ?? inv.client_id ?? "—";
 
-    const key = clientId;
-    const prev = debtorByClient.get(key);
+    const prev = debtorByClient.get(clientId);
     if (!prev) {
-      debtorByClient.set(key, { clientId, clientName, due, paid, open, invoices: 1 });
+      debtorByClient.set(clientId, { clientId, clientName, due, paid, open, invoices: 1 });
     } else {
       prev.due += due;
       prev.paid += paid;
@@ -170,196 +252,341 @@ export default async function WavieFinanceiroPage({
 
   const paidPct = totalDue > 0 ? Math.round((totalPaid / totalDue) * 100) : 0;
 
+  const bg = {
+    background:
+      "radial-gradient(1200px 600px at 15% 10%, rgba(0,0,0,0.06), transparent 60%), radial-gradient(900px 500px at 85% 30%, rgba(0,0,0,0.05), transparent 55%), #fafafa",
+    minHeight: "100vh",
+  } as const;
+
   return (
-    <div style={{ padding: 16, maxWidth: 1200, margin: "0 auto" }}>
-      <div
-        style={{
-          padding: 12,
-          borderRadius: 14,
-          border: "2px solid #000",
-          background: "#d1ecf1",
-          marginBottom: 12,
-          fontWeight: 900,
-        }}
-      >
-        ✅ BUILD MARKER: FINANCEIRO WAVIE (Mês / Recebido / Em aberto / Inadimplentes)
-      </div>
+    <div style={bg}>
+      <div style={{ padding: 18, maxWidth: 1200, margin: "0 auto" }}>
+        <div
+          style={{
+            ...card(),
+            padding: 14,
+            background: "linear-gradient(90deg, rgba(209,236,241,1), rgba(255,255,255,1))",
+            border: "1px solid rgba(0,0,0,0.08)",
+            boxShadow: "0 10px 28px rgba(0,0,0,0.06)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>WAVIE • FINANCEIRO</div>
+              <div style={{ fontSize: 24, fontWeight: 1000, marginTop: 2 }}>Painel Financeiro</div>
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>
+                Mês <b>{month}</b> • Status <b>{status}</b> • Base: invoices + invoice_payments
+              </div>
+              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Devido = wavie_fee_cents</span>
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Pago = soma payments</span>
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Em aberto = devido − pago</span>
+              </div>
+            </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <h1 style={{ fontSize: 22, margin: 0 }}>Financeiro (Wavie)</h1>
-          <p style={{ margin: "6px 0 0", opacity: 0.75 }}>
-            Mês: <b>{month}</b> • Filtro status: <b>{status}</b>
-          </p>
-          <p style={{ margin: "6px 0 0", opacity: 0.7, fontSize: 12 }}>
-            Base: invoices + invoice_payments • Devido = wavie_fee_cents • Pago = soma dos pagamentos • Em aberto = devido − pago
-          </p>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <Link
-            href="/wavie"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.15)",
-              textDecoration: "none",
-              background: "white",
-            }}
-          >
-            Voltar
-          </Link>
-          <Link
-            href="/wavie/faturas"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.15)",
-              textDecoration: "none",
-              background: "white",
-            }}
-          >
-            Faturas
-          </Link>
-          <Link
-            href="/logout"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.15)",
-              textDecoration: "none",
-              background: "white",
-            }}
-          >
-            Sair
-          </Link>
-        </div>
-      </div>
-
-      <div style={{ height: 14 }} />
-
-      <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-        <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>Filtros</div>
-
-          <form action="/wavie/financeiro" method="get" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              name="month"
-              type="month"
-              defaultValue={month}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid rgba(0,0,0,0.15)",
-                width: 160,
-              }}
-            />
-
-            <select
-              name="status"
-              defaultValue={status}
-              style={{
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid rgba(0,0,0,0.15)",
-                background: "white",
-              }}
-            >
-              {(["all", "open", "sent", "paid", "void"] as const).map((s) => (
-                <option key={s} value={s}>
-                  {s === "all" ? "Todos" : s}
-                </option>
-              ))}
-            </select>
-
-            <button
-              style={{
-                padding: "8px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(0,0,0,0.15)",
-                background: "white",
-                cursor: "pointer",
-              }}
-            >
-              Aplicar
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <div style={{ height: 14 }} />
-
-      {/* KPIs */}
-      <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
-        <Kpi title="Bruto (clientes)" value={formatBRLFromCents(totalGross)} hint="Soma de gross_cents no mês" />
-        <Kpi title="Devido à Wavie" value={formatBRLFromCents(totalDue)} hint="Soma de wavie_fee_cents no mês" />
-        <Kpi title="Recebido (Wavie)" value={formatBRLFromCents(totalPaid)} hint="Soma de invoice_payments.amount_cents" />
-        <Kpi title="Em aberto" value={formatBRLFromCents(totalOpen)} hint="Devido − Pago" />
-        <Kpi title="% Recebido" value={`${paidPct}%`} hint="Pago / Devido" />
-        <Kpi title="Faturas no mês" value={`${invoices.length}`} hint="Quantidade de invoices no filtro" />
-      </div>
-
-      <div style={{ height: 14 }} />
-
-      {/* Inadimplentes */}
-      <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-        <div style={{ fontSize: 16, fontWeight: 800 }}>Top inadimplentes (por saldo em aberto)</div>
-        <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-          Ajuda a priorizar cobrança / follow-up.
-        </div>
-
-        <div style={{ height: 12 }} />
-
-        {topDebtors.length === 0 ? (
-          <div style={{ padding: 14, borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.02)" }}>
-            Nenhum cliente com saldo em aberto neste filtro.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gap: 8 }}>
-            {topDebtors.map((d) => (
-              <div
-                key={d.clientId}
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <Link
+                href="/wavie"
                 style={{
-                  padding: 12,
-                  borderRadius: 14,
-                  border: "1px solid rgba(0,0,0,0.10)",
-                  background: "rgba(0,0,0,0.02)",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  flexWrap: "wrap",
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.14)",
+                  textDecoration: "none",
+                  background: "white",
+                  fontSize: 13,
+                  fontWeight: 800,
                 }}
               >
-                <div style={{ minWidth: 260 }}>
-                  <div style={{ fontSize: 14, fontWeight: 800 }}>{d.clientName}</div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>Faturas no filtro: {d.invoices}</div>
+                Voltar
+              </Link>
+              <Link
+                href={`/wavie/faturas?month=${encodeURIComponent(month)}&status=all`}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.14)",
+                  textDecoration: "none",
+                  background: "white",
+                  fontSize: 13,
+                  fontWeight: 800,
+                }}
+              >
+                Abrir Faturas
+              </Link>
+              <Link
+                href="/logout"
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.14)",
+                  textDecoration: "none",
+                  background: "white",
+                  fontSize: 13,
+                  fontWeight: 800,
+                }}
+              >
+                Sair
+              </Link>
+            </div>
+          </div>
+
+          <div style={divider()} />
+
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <form
+              action="/wavie/financeiro"
+              method="get"
+              style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
+            >
+              <label style={{ display: "grid", gap: 6 }}>
+                <span style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Mês</span>
+                <input
+                  name="month"
+                  type="month"
+                  defaultValue={month}
+                  style={{
+                    padding: "10px 10px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(0,0,0,0.14)",
+                    background: "white",
+                    width: 180,
+                    fontWeight: 800,
+                  }}
+                />
+              </label>
+
+              <label style={{ display: "grid", gap: 6 }}>
+                <span style={{ fontSize: 12, opacity: 0.75, fontWeight: 800 }}>Status</span>
+                <select
+                  name="status"
+                  defaultValue={status}
+                  style={{
+                    padding: "10px 10px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(0,0,0,0.14)",
+                    background: "white",
+                    fontWeight: 800,
+                  }}
+                >
+                  {(["all", "open", "sent", "paid", "void"] as const).map((s) => (
+                    <option key={s} value={s}>
+                      {s === "all" ? "Todos" : s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div style={{ display: "flex", alignItems: "end" }}>
+                <button
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(0,0,0,0.14)",
+                    background: "black",
+                    color: "white",
+                    cursor: "pointer",
+                    fontWeight: 900,
+                    minWidth: 140,
+                  }}
+                >
+                  Aplicar
+                </button>
+              </div>
+            </form>
+
+            <div style={{ display: "flex", alignItems: "end" }}>
+              <span style={pill(isFullyLocked ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)", isFullyLocked ? "#065f46" : "#7c2d12")}>
+                {totalInvoices === 0
+                  ? "SEM FATURAS NO MÊS"
+                  : isFullyLocked
+                  ? `MÊS FECHADO • ${lockedCount}/${totalInvoices}`
+                  : isPartiallyLocked
+                  ? `PARCIALMENTE FECHADO • ${lockedCount}/${totalInvoices}`
+                  : `MÊS ABERTO • ${lockedCount}/${totalInvoices}`}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ height: 14 }} />
+
+        {/* KPIs */}
+        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+          <Kpi title="Bruto (clientes)" value={formatBRLFromCents(totalGross)} hint="Soma de gross_cents no mês" />
+          <Kpi title="Devido à Wavie" value={formatBRLFromCents(totalDue)} hint="Soma de wavie_fee_cents no mês" />
+          <Kpi title="Recebido (Wavie)" value={formatBRLFromCents(totalPaid)} hint="Soma de invoice_payments.amount_cents" />
+          <Kpi title="Em aberto" value={formatBRLFromCents(totalOpen)} hint="Devido − Pago" />
+          <Kpi title="% Recebido" value={`${paidPct}%`} hint="Pago / Devido" />
+          <Kpi title="Faturas no mês" value={`${invoices.length}`} hint="Quantidade de invoices no filtro" />
+        </div>
+
+        <div style={{ height: 14 }} />
+
+        {/* Fechamento do mês */}
+        <div style={card()}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 1000 }}>Fechamento do mês</div>
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.75, lineHeight: 1.45 }}>
+                Ao fechar o mês, as faturas e os pagamentos daquele mês ficam <b>congelados</b> (lock no banco).
+                <br />
+                Isso impede alterações retroativas e cria governança contábil real.
+              </div>
+              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Bloqueia edits em invoices</span>
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Bloqueia inserts/edits em payments</span>
+                <span style={pill("rgba(0,0,0,0.06)", "rgba(0,0,0,0.75)")}>Auditável: locked_at</span>
+              </div>
+            </div>
+
+            <div style={{ minWidth: 320 }}>
+              <div style={subtleCard()}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>STATUS DO MÊS</div>
+                    <div style={{ fontSize: 18, fontWeight: 1000, marginTop: 2 }}>
+                      {totalInvoices === 0
+                        ? "Sem faturas"
+                        : isFullyLocked
+                        ? "Fechado"
+                        : isPartiallyLocked
+                        ? "Parcial"
+                        : "Aberto"}
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                      Faturas locked: <b>{lockedCount}</b> / <b>{totalInvoices}</b>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    <form action={closeMonthAction}>
+                      <input type="hidden" name="month" value={month} />
+                      <button
+                        disabled={totalInvoices === 0 || isFullyLocked}
+                        style={{
+                          padding: "12px 14px",
+                          borderRadius: 14,
+                          border: "1px solid rgba(0,0,0,0.14)",
+                          background: totalInvoices === 0 || isFullyLocked ? "rgba(0,0,0,0.15)" : "black",
+                          color: "white",
+                          cursor: totalInvoices === 0 || isFullyLocked ? "not-allowed" : "pointer",
+                          fontWeight: 1000,
+                          minWidth: 160,
+                        }}
+                      >
+                        {isFullyLocked ? "Mês já fechado" : "Fechar mês"}
+                      </button>
+                    </form>
+                  </div>
                 </div>
 
-                <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                  <MiniStat label="Devido" value={formatBRLFromCents(d.due)} />
-                  <MiniStat label="Pago" value={formatBRLFromCents(d.paid)} />
-                  <MiniStat label="Em aberto" value={formatBRLFromCents(d.open)} strong />
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <Link
-                    href={`/wavie/faturas?month=${encodeURIComponent(month)}&status=all`}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 12,
-                      border: "1px solid rgba(0,0,0,0.15)",
-                      textDecoration: "none",
-                      background: "white",
-                      fontSize: 13,
-                    }}
-                  >
-                    Ver faturas
-                  </Link>
+                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.45 }}>
+                  {totalInvoices === 0 ? (
+                    <>Crie/gerencie as faturas em “Faturas” antes de fechar.</>
+                  ) : isFullyLocked ? (
+                    <>
+                      Mês fechado. Alterações retroativas estão bloqueadas pelo banco.
+                      <br />
+                      Se precisar ajustar algo, teremos que criar um fluxo de <b>override</b> (próximo passo).
+                    </>
+                  ) : (
+                    <>
+                      Recomendação: confira inadimplentes, valide pagamentos e só então feche.
+                      <br />
+                      Depois de fechado, não dá para registrar pagamento manual retroativo.
+                    </>
+                  )}
                 </div>
               </div>
-            ))}
+            </div>
           </div>
-        )}
+        </div>
+
+        <div style={{ height: 14 }} />
+
+        {/* Inadimplentes */}
+        <div style={card()}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 1000 }}>Top inadimplentes</div>
+              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                Ordenado por <b>saldo em aberto</b>. Priorize cobrança.
+              </div>
+            </div>
+
+            <Link
+              href={`/wavie/faturas?month=${encodeURIComponent(month)}&status=open`}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.14)",
+                textDecoration: "none",
+                background: "white",
+                fontSize: 13,
+                fontWeight: 900,
+                height: "fit-content",
+              }}
+            >
+              Ver abertas
+            </Link>
+          </div>
+
+          <div style={divider()} />
+
+          {topDebtors.length === 0 ? (
+            <div style={subtleCard()}>Nenhum cliente com saldo em aberto neste filtro.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {topDebtors.map((d) => (
+                <div
+                  key={d.clientId}
+                  style={{
+                    padding: 14,
+                    borderRadius: 16,
+                    border: "1px solid rgba(0,0,0,0.10)",
+                    background: "rgba(0,0,0,0.02)",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ minWidth: 260 }}>
+                    <div style={{ fontSize: 15, fontWeight: 1000 }}>{d.clientName}</div>
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                      Faturas no filtro: <b>{d.invoices}</b>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                    <MiniStat label="Devido" value={formatBRLFromCents(d.due)} />
+                    <MiniStat label="Pago" value={formatBRLFromCents(d.paid)} />
+                    <MiniStat label="Em aberto" value={formatBRLFromCents(d.open)} strong />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    <Link
+                      href={`/wavie/faturas?month=${encodeURIComponent(month)}&status=all`}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        border: "1px solid rgba(0,0,0,0.14)",
+                        textDecoration: "none",
+                        background: "white",
+                        fontSize: 13,
+                        fontWeight: 900,
+                      }}
+                    >
+                      Abrir faturas
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ height: 18 }} />
       </div>
     </div>
   );
@@ -367,10 +594,18 @@ export default async function WavieFinanceiroPage({
 
 function Kpi({ title, value, hint }: { title: string; value: string; hint: string }) {
   return (
-    <div style={{ padding: 14, borderRadius: 16, border: "1px solid rgba(0,0,0,0.12)", background: "white" }}>
-      <div style={{ fontSize: 12, opacity: 0.75 }}>{title}</div>
-      <div style={{ fontSize: 20, fontWeight: 900, marginTop: 4 }}>{value}</div>
-      <div style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}>{hint}</div>
+    <div
+      style={{
+        padding: 16,
+        borderRadius: 18,
+        border: "1px solid rgba(0,0,0,0.10)",
+        background: "white",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.06)",
+      }}
+    >
+      <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>{title}</div>
+      <div style={{ fontSize: 22, fontWeight: 1000, marginTop: 6 }}>{value}</div>
+      <div style={{ fontSize: 12, opacity: 0.65, marginTop: 8, lineHeight: 1.4 }}>{hint}</div>
     </div>
   );
 }
@@ -378,8 +613,8 @@ function Kpi({ title, value, hint }: { title: string; value: string; hint: strin
 function MiniStat({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
     <div>
-      <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: strong ? 900 : 700 }}>{value}</div>
+      <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: strong ? 1000 : 800 }}>{value}</div>
     </div>
   );
 }
