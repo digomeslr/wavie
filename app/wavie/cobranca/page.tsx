@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import SeedFlashCleaner from "./seed-flash-cleaner";
+import { ensureStripeCustomerForClient } from "@/lib/stripe/stripe-server";
 
 /* ===================== Types ===================== */
 
@@ -47,6 +48,12 @@ type AttemptRow = {
   outcome_code: string | null;
   outcome_message: string | null;
   created_at: string;
+};
+
+type StripeCustomerRow = {
+  client_id: string;
+  stripe_customer_id: string;
+  stripe_mode: "test" | "live";
 };
 
 /* ===================== Helpers ===================== */
@@ -160,10 +167,6 @@ async function seedSubscriptionsAction() {
   );
 }
 
-/**
- * 🔥 IMPORTANTE: não dar throw em RPC aqui.
- * Se der erro, voltamos para a própria página com o msg (pra não crashar o app).
- */
 async function enqueueAttemptAction(formData: FormData) {
   "use server";
 
@@ -211,6 +214,26 @@ async function processAttemptAction(formData: FormData) {
   redirect(`/wavie/cobranca?proc=ok`);
 }
 
+async function createStripeCustomerAction(formData: FormData) {
+  "use server";
+
+  const client_id = String(formData.get("client_id") ?? "");
+  if (!client_id) redirect(`/wavie/cobranca?st=error&msg=${encodeURIComponent("client_id ausente")}`);
+
+  try {
+    const res = await ensureStripeCustomerForClient(client_id);
+    revalidatePath("/wavie/cobranca");
+    redirect(
+      `/wavie/cobranca?st=ok&msg=${encodeURIComponent(
+        `${res.reused ? "Reutilizado" : "Criado"}: ${res.stripe_customer_id}`
+      )}`
+    );
+  } catch (e: any) {
+    console.error("COBRANCA createStripeCustomerAction FAILED:", e);
+    redirect(`/wavie/cobranca?st=error&msg=${encodeURIComponent(e?.message || "erro desconhecido")}`);
+  }
+}
+
 /* ===================== Page ===================== */
 
 export default async function WavieCobrancaPage({
@@ -225,6 +248,7 @@ export default async function WavieCobrancaPage({
         enq?: string;
         id?: string;
         proc?: string;
+        st?: string;
       }>
     | {
         seed?: string;
@@ -234,6 +258,7 @@ export default async function WavieCobrancaPage({
         enq?: string;
         id?: string;
         proc?: string;
+        st?: string;
       };
 }) {
   const supabase = await createClient();
@@ -251,7 +276,7 @@ export default async function WavieCobrancaPage({
   const enq = String(sp?.enq ?? "");
   const enqId = String(sp?.id ?? "");
   const proc = String(sp?.proc ?? "");
-
+  const st = String(sp?.st ?? "");
   const msg = String(sp?.msg ?? "");
 
   // Subscriptions + Client
@@ -265,7 +290,18 @@ export default async function WavieCobrancaPage({
   if (subsErr) throw new Error(subsErr.message);
   const subscriptions: SubscriptionRow[] = (subsRaw ?? []) as any;
 
-  // Invoices (últimas, para enfileirar tentativa)
+  // Stripe customers (TEST)
+  const { data: scRaw } = await supabase
+    .from("stripe_customers")
+    .select("client_id,stripe_customer_id,stripe_mode")
+    .eq("stripe_mode", "test");
+
+  const stripeCustomers: StripeCustomerRow[] = (scRaw ?? []) as any;
+  const stripeMap = new Map<string, string>(
+    stripeCustomers.map((r) => [r.client_id, r.stripe_customer_id])
+  );
+
+  // Invoices
   const { data: invRaw, error: invErr } = await supabase
     .from("invoices")
     .select("id,client_id,month,status,locked_at,gross_cents,wavie_fee_cents")
@@ -275,7 +311,7 @@ export default async function WavieCobrancaPage({
   if (invErr) throw new Error(invErr.message);
   const invoices: InvoiceRow[] = (invRaw ?? []) as any;
 
-  // Attempts (últimas)
+  // Attempts
   const { data: attemptsRaw, error: attErr } = await supabase
     .from("invoice_attempts")
     .select(
@@ -307,7 +343,7 @@ export default async function WavieCobrancaPage({
             <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 900 }}>WAVIE • COBRANÇA</div>
             <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Assinaturas & Simulador de Cobrança</h1>
             <p style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>
-              Pipeline auditável • Sem gateway real (simulação ERP-level)
+              Pipeline auditável • Simulador + Stripe (TEST) • Sem cobrança real ainda
             </p>
           </div>
 
@@ -330,13 +366,17 @@ export default async function WavieCobrancaPage({
 
         <div style={{ height: 10 }} />
 
-        {/* Flash banner */}
+        {/* Banner */}
         {seed === "ok" ? (
           <div style={bannerOk()}>
             ✅ Seed concluído • Criadas: <b>{created}</b> • Já existiam: <b>{skipped}</b>
           </div>
         ) : seed === "error" ? (
           <div style={bannerErr()}>❌ Seed falhou • {msg || "erro desconhecido"}</div>
+        ) : st === "ok" ? (
+          <div style={bannerOk()}>✅ Stripe TEST • {msg}</div>
+        ) : st === "error" ? (
+          <div style={bannerErr()}>❌ Stripe TEST falhou • {msg || "erro desconhecido"}</div>
         ) : enq === "ok" ? (
           <div style={bannerOk()}>
             ✅ Tentativa enfileirada • attempt_id:{" "}
@@ -352,7 +392,7 @@ export default async function WavieCobrancaPage({
           <div style={bannerErr()}>❌ Processar falhou • {msg || "erro desconhecido"}</div>
         ) : (
           <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Dica: enfileire uma tentativa em uma fatura <b>aberta</b> e depois processe.
+            Dica: Stripe aqui está em <b>TEST</b> e só cria Customer (não cobra).
           </div>
         )}
       </div>
@@ -379,6 +419,7 @@ export default async function WavieCobrancaPage({
             {subscriptions.map((s) => {
               const clientName = s.clients?.name ?? s.clients?.slug ?? s.client_id;
               const nextMode = s.payment_mode === "manual" ? "auto" : "manual";
+              const stripeCustomerId = stripeMap.get(s.client_id);
 
               return (
                 <div key={s.id} style={subCard()}>
@@ -388,21 +429,14 @@ export default async function WavieCobrancaPage({
                       <div style={{ fontSize: 12, opacity: 0.7 }}>
                         Status: <b>{s.status}</b> • Ciclo: <b>{s.billing_cycle}</b>
                       </div>
+
                       <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Provider: <b>{s.provider ?? "—"}</b>
-                        {s.provider_customer_id ? (
-                          <>
-                            {" "}
-                            • customer:{" "}
-                            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-                              {s.provider_customer_id}
-                            </span>
-                          </>
-                        ) : null}
+                        Stripe customer (TEST):{" "}
+                        <b>{stripeCustomerId ? stripeCustomerId : "—"}</b>
                       </div>
                     </div>
 
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                       <span style={pill(s.payment_mode === "auto" ? "#dcfce7" : "#fff7ed")}>
                         {s.payment_mode === "auto" ? "AUTO" : "MANUAL"}
                       </span>
@@ -411,6 +445,13 @@ export default async function WavieCobrancaPage({
                         <input type="hidden" name="subscription_id" value={s.id} />
                         <input type="hidden" name="next_mode" value={nextMode} />
                         <button style={btnDark()}>Trocar para {nextMode.toUpperCase()}</button>
+                      </form>
+
+                      <form action={createStripeCustomerAction}>
+                        <input type="hidden" name="client_id" value={s.client_id} />
+                        <button style={stripeCustomerId ? btnDisabled() : btnDark()} disabled={!!stripeCustomerId}>
+                          {stripeCustomerId ? "Stripe OK" : "Criar Stripe Customer (TEST)"}
+                        </button>
                       </form>
                     </div>
                   </div>
