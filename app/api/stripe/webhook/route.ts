@@ -21,8 +21,12 @@ function getStripe() {
 
   if (!secretKey) throw new Error(`Stripe secret key missing for mode=${mode}`);
 
-  // ✅ recomendo fixar apiVersion
-  return { stripe: new Stripe(secretKey, { apiVersion: "2024-06-20" }), mode };
+  // ⚠️ IMPORTANTE:
+  // usamos a apiVersion exigida pela lib Stripe instalada no projeto
+  return {
+    stripe: new Stripe(secretKey, { apiVersion: "2026-01-28.clover" }),
+    mode,
+  };
 }
 
 function getWebhookSecret(mode: "test" | "live") {
@@ -74,7 +78,7 @@ export async function POST(req: Request) {
         stripe_event_id: `invalid_${Date.now()}`,
         type: "signature_verification_failed",
         livemode: false,
-        payload: { rawBody, error: err?.message ?? String(err) }, // ✅ raw
+        payload: { rawBody, error: err?.message ?? String(err) },
         status: "error",
         error_message: err?.message ?? String(err),
         signature_present,
@@ -90,27 +94,28 @@ export async function POST(req: Request) {
 
   const admin = getSupabaseAdmin();
 
-  // ✅ audit trail (idempotente)
-  const insertPayload = {
-    stripe_event_id: event.id,
-    type: event.type,
-    livemode: !!event.livemode,
-    payload: { rawBody, event }, // ✅ recomendo salvar raw + event
-    status: "received",
-    signature_present,
-    request_id,
-  };
-
+  // ✅ Audit trail (idempotente)
   const { error: upErr } = await admin
     .from("stripe_webhook_events")
-    .upsert(insertPayload, { onConflict: "stripe_event_id" });
+    .upsert(
+      {
+        stripe_event_id: event.id,
+        type: event.type,
+        livemode: !!event.livemode,
+        payload: { rawBody, event },
+        status: "received",
+        signature_present,
+        request_id,
+      },
+      { onConflict: "stripe_event_id" }
+    );
 
   if (upErr) {
     return new NextResponse(`DB Error: ${upErr.message}`, { status: 500 });
   }
 
-  // ✅ F3.1: enqueue idempotente (1 linha por stripe_event_id)
-  const { error: qErr } = await admin
+  // ✅ F3.1 — enfileira para processamento futuro
+  const { error: queueErr } = await admin
     .from("stripe_event_process_queue")
     .upsert(
       {
@@ -123,9 +128,8 @@ export async function POST(req: Request) {
       { onConflict: "stripe_event_id" }
     );
 
-  // modo estrito: se não enfileirar, força retry do Stripe
-  if (qErr) {
-    return new NextResponse(`Queue Error: ${qErr.message}`, { status: 500 });
+  if (queueErr) {
+    return new NextResponse(`Queue Error: ${queueErr.message}`, { status: 500 });
   }
 
   return NextResponse.json({ received: true });
