@@ -29,7 +29,7 @@ type SubscriptionRow = {
 type InvoiceRow = {
   id: string;
   client_id: string;
-  month: string; // YYYY-MM-01
+  month: string;
   status: "open" | "sent" | "paid" | "void";
   locked_at: string | null;
   gross_cents: number;
@@ -58,9 +58,7 @@ function formatBRLFromCents(cents: number) {
   });
 }
 
-async function assertWavieAdminOrRedirect(
-  supabase: Awaited<ReturnType<typeof createClient>>
-) {
+async function assertWavieAdminOrRedirect(supabase: Awaited<ReturnType<typeof createClient>>) {
   const {
     data: { user },
     error: userErr,
@@ -125,9 +123,7 @@ async function seedSubscriptionsAction() {
     redirect(`/wavie/cobranca?seed=ok&c=0&s=0`);
   }
 
-  const { data: subs, error: sErr } = await supabase
-    .from("billing_subscriptions")
-    .select("client_id");
+  const { data: subs, error: sErr } = await supabase.from("billing_subscriptions").select("client_id");
   if (sErr) {
     redirect(`/wavie/cobranca?seed=error&msg=${encodeURIComponent(sErr.message)}`);
   }
@@ -164,11 +160,15 @@ async function seedSubscriptionsAction() {
   );
 }
 
+/**
+ * 🔥 IMPORTANTE: não dar throw em RPC aqui.
+ * Se der erro, voltamos para a própria página com o msg (pra não crashar o app).
+ */
 async function enqueueAttemptAction(formData: FormData) {
   "use server";
 
   const invoice_id = String(formData.get("invoice_id") ?? "");
-  if (!invoice_id) throw new Error("invoice_id ausente");
+  if (!invoice_id) redirect(`/wavie/cobranca?enq=error&msg=${encodeURIComponent("invoice_id ausente")}`);
 
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
@@ -182,10 +182,9 @@ async function enqueueAttemptAction(formData: FormData) {
 
   if (error) {
     console.error("COBRANCA enqueueAttemptAction FAILED:", error);
-    throw new Error("ENQUEUE_ATTEMPT_FAILED");
+    redirect(`/wavie/cobranca?enq=error&msg=${encodeURIComponent(error.message)}`);
   }
 
-  // data é uuid (id do attempt)
   revalidatePath("/wavie/cobranca");
   redirect(`/wavie/cobranca?enq=ok&id=${encodeURIComponent(String(data ?? ""))}`);
 }
@@ -194,7 +193,7 @@ async function processAttemptAction(formData: FormData) {
   "use server";
 
   const attempt_id = String(formData.get("attempt_id") ?? "");
-  if (!attempt_id) throw new Error("attempt_id ausente");
+  if (!attempt_id) redirect(`/wavie/cobranca?proc=error&msg=${encodeURIComponent("attempt_id ausente")}`);
 
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
@@ -205,10 +204,11 @@ async function processAttemptAction(formData: FormData) {
 
   if (error) {
     console.error("COBRANCA processAttemptAction FAILED:", error);
-    throw new Error("PROCESS_ATTEMPT_FAILED");
+    redirect(`/wavie/cobranca?proc=error&msg=${encodeURIComponent(error.message)}`);
   }
 
   revalidatePath("/wavie/cobranca");
+  redirect(`/wavie/cobranca?proc=ok`);
 }
 
 /* ===================== Page ===================== */
@@ -217,8 +217,24 @@ export default async function WavieCobrancaPage({
   searchParams,
 }: {
   searchParams?:
-    | Promise<{ seed?: string; c?: string; s?: string; msg?: string; enq?: string; id?: string }>
-    | { seed?: string; c?: string; s?: string; msg?: string; enq?: string; id?: string };
+    | Promise<{
+        seed?: string;
+        c?: string;
+        s?: string;
+        msg?: string;
+        enq?: string;
+        id?: string;
+        proc?: string;
+      }>
+    | {
+        seed?: string;
+        c?: string;
+        s?: string;
+        msg?: string;
+        enq?: string;
+        id?: string;
+        proc?: string;
+      };
 }) {
   const supabase = await createClient();
   await assertWavieAdminOrRedirect(supabase);
@@ -231,10 +247,12 @@ export default async function WavieCobrancaPage({
   const seed = String(sp?.seed ?? "");
   const created = Number(sp?.c ?? 0);
   const skipped = Number(sp?.s ?? 0);
-  const msg = String(sp?.msg ?? "");
 
   const enq = String(sp?.enq ?? "");
   const enqId = String(sp?.id ?? "");
+  const proc = String(sp?.proc ?? "");
+
+  const msg = String(sp?.msg ?? "");
 
   // Subscriptions + Client
   const { data: subsRaw, error: subsErr } = await supabase
@@ -326,6 +344,12 @@ export default async function WavieCobrancaPage({
               {enqId || "—"}
             </span>
           </div>
+        ) : enq === "error" ? (
+          <div style={bannerErr()}>❌ Enfileirar falhou • {msg || "erro desconhecido"}</div>
+        ) : proc === "ok" ? (
+          <div style={bannerOk()}>✅ Tentativa processada</div>
+        ) : proc === "error" ? (
+          <div style={bannerErr()}>❌ Processar falhou • {msg || "erro desconhecido"}</div>
         ) : (
           <div style={{ fontSize: 12, opacity: 0.75 }}>
             Dica: enfileire uma tentativa em uma fatura <b>aberta</b> e depois processe.
@@ -399,7 +423,7 @@ export default async function WavieCobrancaPage({
 
       <div style={{ height: 14 }} />
 
-      {/* Enqueue attempts (from invoices) */}
+      {/* Enqueue attempts */}
       <div style={card()}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Enfileirar tentativa (simulador)</h2>
