@@ -4,14 +4,10 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-// 🔐 Proteção simples: só quem tem a key interna pode chamar
 function assertInternalAuth(req: Request) {
   const header = req.headers.get("x-internal-worker-key");
   const expected = process.env.INTERNAL_WORKER_KEY;
-
-  if (!expected || header !== expected) {
-    throw new Error("unauthorized");
-  }
+  if (!expected || header !== expected) throw new Error("unauthorized");
 }
 
 function getSupabaseAdmin() {
@@ -28,16 +24,14 @@ function getSupabaseAdmin() {
 
 export async function POST(req: Request) {
   try {
-    // 1) garante que só chamada interna executa
+    // 1) auth interna
     assertInternalAuth(req);
-
     const admin = getSupabaseAdmin();
 
-    // 2) tenta pegar 1 evento da fila
+    // 2) claim de 1 evento da fila
     const { data: claimed, error: claimErr } = await admin.rpc(
       "claim_next_stripe_event"
     );
-
     if (claimErr) {
       return NextResponse.json(
         { ok: false, error: claimErr.message },
@@ -45,36 +39,66 @@ export async function POST(req: Request) {
       );
     }
 
-    // nada para processar
     if (!claimed || claimed.length === 0) {
       return NextResponse.json({ ok: true, processed: false });
     }
 
-    const event = claimed[0];
+    const evt = claimed[0];
 
     try {
-      // ⚠️ F3.3: ainda NÃO processamos regra de negócio
-      // apenas marcamos como processed para validar o fluxo
+      // 3) buscar payload bruto do webhook
+      const { data: wh, error: whErr } = await admin
+        .from("stripe_webhook_events")
+        .select("payload")
+        .eq("stripe_event_id", evt.stripe_event_id)
+        .maybeSingle();
 
+      if (whErr) throw new Error(whErr.message);
+      if (!wh?.payload) throw new Error("missing_webhook_payload");
+
+      const payload = wh.payload as any;
+      const stripeEvent = payload.event ?? payload;
+      const eventType = stripeEvent.type;
+
+      // 4) regra REAL: invoice.paid
+      if (eventType === "invoice.paid") {
+        const invoice = stripeEvent.data.object;
+
+        // Stripe invoice id → nosso gateway_invoice_id
+        const gatewayInvoiceId: string = invoice.id;
+
+        const paidAt =
+          invoice.status_transitions?.paid_at != null
+            ? new Date(
+                invoice.status_transitions.paid_at * 1000
+              ).toISOString()
+            : null;
+
+        const { error: applyErr } = await admin.rpc("apply_invoice_paid", {
+          p_gateway_invoice_id: gatewayInvoiceId,
+          p_paid_at: paidAt,
+        });
+
+        if (applyErr) throw new Error(applyErr.message);
+      }
+
+      // 5) fecha evento como processed
       const { error: doneErr } = await admin.rpc(
         "mark_stripe_event_processed",
-        { p_id: event.id }
+        { p_id: evt.id }
       );
-
-      if (doneErr) {
-        throw new Error(doneErr.message);
-      }
+      if (doneErr) throw new Error(doneErr.message);
 
       return NextResponse.json({
         ok: true,
         processed: true,
-        stripe_event_id: event.stripe_event_id,
-        event_type: event.event_type,
+        stripe_event_id: evt.stripe_event_id,
+        event_type: evt.event_type,
       });
     } catch (processErr: any) {
-      // 3) se algo der errado, marca como failed
+      // erro de processamento → failed
       await admin.rpc("mark_stripe_event_failed", {
-        p_id: event.id,
+        p_id: evt.id,
         p_error: processErr?.message ?? "processing_error",
       });
 
