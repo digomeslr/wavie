@@ -23,7 +23,6 @@ function getSupabaseAdmin() {
 }
 
 function extractStripeEvent(payload: any) {
-  // compatível com {rawBody,event} e com payload=event direto
   return payload?.event ?? payload;
 }
 
@@ -32,6 +31,7 @@ export async function POST(req: Request) {
     assertInternalAuth(req);
     const admin = getSupabaseAdmin();
 
+    // 1) claim 1 evento
     const { data: claimed, error: claimErr } = await admin.rpc(
       "claim_next_stripe_event"
     );
@@ -49,6 +49,7 @@ export async function POST(req: Request) {
     const evt = claimed[0];
 
     try {
+      // 2) buscar payload do webhook
       const { data: wh, error: whErr } = await admin
         .from("stripe_webhook_events")
         .select("payload")
@@ -59,19 +60,44 @@ export async function POST(req: Request) {
       if (!wh?.payload) throw new Error("missing_webhook_payload");
 
       const stripeEvent = extractStripeEvent(wh.payload);
-      const eventType = stripeEvent?.type;
+      const eventType: string | null = stripeEvent?.type ?? null;
+      if (!eventType) throw new Error("missing_event_type");
 
-      // ✅ tratar os dois eventos equivalentes
+      // 3) regra de ação por tipo (process/ignore)
+      const { data: rule, error: ruleErr } = await admin
+        .from("stripe_event_type_rules")
+        .select("action")
+        .eq("event_type", eventType)
+        .maybeSingle<{ action: "process" | "ignore" }>();
+
+      if (ruleErr) throw new Error(ruleErr.message);
+
+      if (rule?.action === "ignore") {
+        // marca como ignored e finaliza
+        const { error: igErr } = await admin
+          .from("stripe_event_process_queue")
+          .update({ status: "ignored", processed_at: new Date().toISOString() })
+          .eq("id", evt.id);
+
+        if (igErr) throw new Error(igErr.message);
+
+        return NextResponse.json({
+          ok: true,
+          processed: true,
+          ignored: true,
+          stripe_event_id: evt.stripe_event_id,
+          event_type: eventType,
+        });
+      }
+
+      // 4) processar eventos financeiros (por enquanto: invoice paid)
       const isInvoicePaid =
         eventType === "invoice.paid" || eventType === "invoice.payment_succeeded";
 
       if (isInvoicePaid) {
         const invoice = stripeEvent.data.object;
-
-        // Stripe invoice id → nosso gateway_invoice_id
         const gatewayInvoiceId: string = invoice.id;
 
-        // paid_at (nem sempre vem igual em todos eventos)
         const paidAt =
           invoice.status_transitions?.paid_at != null
             ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
@@ -85,6 +111,7 @@ export async function POST(req: Request) {
         if (applyErr) throw new Error(applyErr.message);
       }
 
+      // 5) finaliza como processed
       const { error: doneErr } = await admin.rpc(
         "mark_stripe_event_processed",
         { p_id: evt.id }
@@ -95,7 +122,7 @@ export async function POST(req: Request) {
         ok: true,
         processed: true,
         stripe_event_id: evt.stripe_event_id,
-        event_type: evt.event_type,
+        event_type: eventType,
       });
     } catch (processErr: any) {
       await admin.rpc("mark_stripe_event_failed", {
