@@ -446,7 +446,7 @@ export default async function WavieCobrancaPage({
                       <form action={togglePaymentModeAction}>
                         <input type="hidden" name="subscription_id" value={s.id} />
                         <input type="hidden" name="next_mode" value={nextMode} />
-                        <button style={btnDark()}>Trocar para {nextMode.toUpperCASE()}</button>
+                        <button style={btnDark()}>Trocar para {nextMode.toUpperCase()}</button>
                       </form>
 
                       <form action={createStripeCustomerAction}>
