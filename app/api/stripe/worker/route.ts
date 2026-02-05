@@ -22,13 +22,16 @@ function getSupabaseAdmin() {
   });
 }
 
+function extractStripeEvent(payload: any) {
+  // compatível com {rawBody,event} e com payload=event direto
+  return payload?.event ?? payload;
+}
+
 export async function POST(req: Request) {
   try {
-    // 1) auth interna
     assertInternalAuth(req);
     const admin = getSupabaseAdmin();
 
-    // 2) claim de 1 evento da fila
     const { data: claimed, error: claimErr } = await admin.rpc(
       "claim_next_stripe_event"
     );
@@ -46,7 +49,6 @@ export async function POST(req: Request) {
     const evt = claimed[0];
 
     try {
-      // 3) buscar payload bruto do webhook
       const { data: wh, error: whErr } = await admin
         .from("stripe_webhook_events")
         .select("payload")
@@ -56,22 +58,23 @@ export async function POST(req: Request) {
       if (whErr) throw new Error(whErr.message);
       if (!wh?.payload) throw new Error("missing_webhook_payload");
 
-      const payload = wh.payload as any;
-      const stripeEvent = payload.event ?? payload;
-      const eventType = stripeEvent.type;
+      const stripeEvent = extractStripeEvent(wh.payload);
+      const eventType = stripeEvent?.type;
 
-      // 4) regra REAL: invoice.paid
-      if (eventType === "invoice.paid") {
+      // ✅ tratar os dois eventos equivalentes
+      const isInvoicePaid =
+        eventType === "invoice.paid" || eventType === "invoice.payment_succeeded";
+
+      if (isInvoicePaid) {
         const invoice = stripeEvent.data.object;
 
         // Stripe invoice id → nosso gateway_invoice_id
         const gatewayInvoiceId: string = invoice.id;
 
+        // paid_at (nem sempre vem igual em todos eventos)
         const paidAt =
           invoice.status_transitions?.paid_at != null
-            ? new Date(
-                invoice.status_transitions.paid_at * 1000
-              ).toISOString()
+            ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
             : null;
 
         const { error: applyErr } = await admin.rpc("apply_invoice_paid", {
@@ -82,7 +85,6 @@ export async function POST(req: Request) {
         if (applyErr) throw new Error(applyErr.message);
       }
 
-      // 5) fecha evento como processed
       const { error: doneErr } = await admin.rpc(
         "mark_stripe_event_processed",
         { p_id: evt.id }
@@ -96,7 +98,6 @@ export async function POST(req: Request) {
         event_type: evt.event_type,
       });
     } catch (processErr: any) {
-      // erro de processamento → failed
       await admin.rpc("mark_stripe_event_failed", {
         p_id: evt.id,
         p_error: processErr?.message ?? "processing_error",
