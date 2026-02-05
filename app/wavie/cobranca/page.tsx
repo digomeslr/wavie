@@ -222,13 +222,18 @@ async function createStripeCustomerAction(formData: FormData) {
 
   try {
     const res = await ensureStripeCustomerForClient(client_id);
+
+    // ✅ não usar redirect dentro do try (pra não cair no catch)
+    const url = `/wavie/cobranca?st=ok&msg=${encodeURIComponent(
+      `${res.reused ? "Reutilizado" : "Criado"}: ${res.stripe_customer_id}`
+    )}`;
+
     revalidatePath("/wavie/cobranca");
-    redirect(
-      `/wavie/cobranca?st=ok&msg=${encodeURIComponent(
-        `${res.reused ? "Reutilizado" : "Criado"}: ${res.stripe_customer_id}`
-      )}`
-    );
+    redirect(url);
   } catch (e: any) {
+    // ✅ Next.js redirect() throws NEXT_REDIRECT — não tratar como erro normal
+    if (e?.digest?.startsWith?.("NEXT_REDIRECT")) throw e;
+
     console.error("COBRANCA createStripeCustomerAction FAILED:", e);
     redirect(`/wavie/cobranca?st=error&msg=${encodeURIComponent(e?.message || "erro desconhecido")}`);
   }
@@ -297,9 +302,7 @@ export default async function WavieCobrancaPage({
     .eq("stripe_mode", "test");
 
   const stripeCustomers: StripeCustomerRow[] = (scRaw ?? []) as any;
-  const stripeMap = new Map<string, string>(
-    stripeCustomers.map((r) => [r.client_id, r.stripe_customer_id])
-  );
+  const stripeMap = new Map<string, string>(stripeCustomers.map((r) => [r.client_id, r.stripe_customer_id]));
 
   // Invoices
   const { data: invRaw, error: invErr } = await supabase
@@ -431,8 +434,7 @@ export default async function WavieCobrancaPage({
                       </div>
 
                       <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Stripe customer (TEST):{" "}
-                        <b>{stripeCustomerId ? stripeCustomerId : "—"}</b>
+                        Stripe customer (TEST): <b>{stripeCustomerId ? stripeCustomerId : "—"}</b>
                       </div>
                     </div>
 
@@ -444,7 +446,7 @@ export default async function WavieCobrancaPage({
                       <form action={togglePaymentModeAction}>
                         <input type="hidden" name="subscription_id" value={s.id} />
                         <input type="hidden" name="next_mode" value={nextMode} />
-                        <button style={btnDark()}>Trocar para {nextMode.toUpperCase()}</button>
+                        <button style={btnDark()}>Trocar para {nextMode.toUpperCASE()}</button>
                       </form>
 
                       <form action={createStripeCustomerAction}>
