@@ -21,8 +21,8 @@ function getStripe() {
 
   if (!secretKey) throw new Error(`Stripe secret key missing for mode=${mode}`);
 
-  // ✅ sem fixar apiVersion (usa a versão configurada na conta)
-  return { stripe: new Stripe(secretKey), mode };
+  // ✅ recomendo fixar apiVersion
+  return { stripe: new Stripe(secretKey, { apiVersion: "2024-06-20" }), mode };
 }
 
 function getWebhookSecret(mode: "test" | "live") {
@@ -74,7 +74,7 @@ export async function POST(req: Request) {
         stripe_event_id: `invalid_${Date.now()}`,
         type: "signature_verification_failed",
         livemode: false,
-        payload: { rawBody, error: err?.message ?? String(err) },
+        payload: { rawBody, error: err?.message ?? String(err) }, // ✅ raw
         status: "error",
         error_message: err?.message ?? String(err),
         signature_present,
@@ -90,23 +90,42 @@ export async function POST(req: Request) {
 
   const admin = getSupabaseAdmin();
 
+  // ✅ audit trail (idempotente)
   const insertPayload = {
     stripe_event_id: event.id,
     type: event.type,
     livemode: !!event.livemode,
-    payload: event as any,
+    payload: { rawBody, event }, // ✅ recomendo salvar raw + event
     status: "received",
     signature_present,
     request_id,
   };
 
-  // ✅ idempotente de verdade
   const { error: upErr } = await admin
     .from("stripe_webhook_events")
     .upsert(insertPayload, { onConflict: "stripe_event_id" });
 
   if (upErr) {
     return new NextResponse(`DB Error: ${upErr.message}`, { status: 500 });
+  }
+
+  // ✅ F3.1: enqueue idempotente (1 linha por stripe_event_id)
+  const { error: qErr } = await admin
+    .from("stripe_event_process_queue")
+    .upsert(
+      {
+        stripe_event_id: event.id,
+        livemode: !!event.livemode,
+        event_type: event.type,
+        status: "queued",
+        attempts: 0,
+      },
+      { onConflict: "stripe_event_id" }
+    );
+
+  // modo estrito: se não enfileirar, força retry do Stripe
+  if (qErr) {
+    return new NextResponse(`Queue Error: ${qErr.message}`, { status: 500 });
   }
 
   return NextResponse.json({ received: true });
