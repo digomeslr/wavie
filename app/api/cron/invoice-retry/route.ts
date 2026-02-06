@@ -31,7 +31,8 @@ function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
 
-  return new Stripe(key, { apiVersion: "2024-06-20" });
+  // ✅ Removido apiVersion hardcoded para evitar mismatch de types
+  return new Stripe(key);
 }
 
 type DequeuedRetry = {
@@ -61,8 +62,8 @@ async function fetchInvoiceStripeId(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   invoiceId: string
 ): Promise<{ stripe_invoice_id: string; status?: string | null; client_id?: string | null }> {
-  // Assumimos que existe stripe_invoice_id (pela fase F4.4/F4.5 que vocês fecharam).
-  // Se o nome for diferente, eu ajusto no próximo passo rapidamente.
+  // Assumimos que existe stripe_invoice_id na tabela invoices.
+  // Se o nome for diferente, me mande o campo correto e eu ajusto no próximo passo.
   const { data, error } = await supabase
     .from("invoices")
     .select("id, client_id, status, stripe_invoice_id")
@@ -99,12 +100,11 @@ export async function POST(req: Request) {
 
     const list = (items ?? []) as DequeuedRetry[];
 
-    // Se nada para fazer, fim.
     if (list.length === 0) {
       return NextResponse.json({ ok: true, worker: "invoice-retry", dequeued: 0, results: [] });
     }
 
-    // 2) Processar serialmente (mais seguro para início; depois paralelizamos com cuidado)
+    // 2) Processar serialmente (mais seguro para início)
     const results: any[] = [];
 
     for (const job of list) {
@@ -129,7 +129,6 @@ export async function POST(req: Request) {
         }
 
         // 2.2) Tentar pagar no Stripe
-        // Stripe vai tentar cobrar o método default do customer/subscription
         await stripe.invoices.pay(inv.stripe_invoice_id);
 
         // 2.3) Marca tentativa como success
@@ -146,11 +145,10 @@ export async function POST(req: Request) {
         try {
           await updateAttemptStatus(supabase, attemptId, "failed");
         } catch {
-          // não mascara erro original; só evita crash em cascata
+          // evita crash em cascata
         }
 
         // 2.5) Reagendar próximo retry via RPC idempotente
-        // plan_id ainda não está no job -> passamos null por enquanto
         let reschedule: any = null;
         try {
           const { data: sch, error: schErr } = await supabase.rpc("schedule_invoice_retry_if_allowed", {
