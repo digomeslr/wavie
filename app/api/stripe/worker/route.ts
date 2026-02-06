@@ -31,7 +31,6 @@ export async function POST(req: Request) {
     assertInternalAuth(req);
     const admin = getSupabaseAdmin();
 
-    // 1) claim 1 evento
     const { data: claimed, error: claimErr } = await admin.rpc(
       "claim_next_stripe_event"
     );
@@ -49,7 +48,6 @@ export async function POST(req: Request) {
     const evt = claimed[0];
 
     try {
-      // 2) buscar payload do webhook
       const { data: wh, error: whErr } = await admin
         .from("stripe_webhook_events")
         .select("payload")
@@ -63,7 +61,7 @@ export async function POST(req: Request) {
       const eventType: string | null = stripeEvent?.type ?? null;
       if (!eventType) throw new Error("missing_event_type");
 
-      // 3) regra de ação por tipo (process/ignore)
+      // regra de ação por tipo (process/ignore)
       const { data: rule, error: ruleErr } = await admin
         .from("stripe_event_type_rules")
         .select("action")
@@ -73,7 +71,6 @@ export async function POST(req: Request) {
       if (ruleErr) throw new Error(ruleErr.message);
 
       if (rule?.action === "ignore") {
-        // marca como ignored e finaliza
         const { error: igErr } = await admin
           .from("stripe_event_process_queue")
           .update({ status: "ignored", processed_at: new Date().toISOString() })
@@ -90,7 +87,7 @@ export async function POST(req: Request) {
         });
       }
 
-      // 4) processar eventos financeiros (por enquanto: invoice paid)
+      // ---- regras financeiras ----
       const isInvoicePaid =
         eventType === "invoice.paid" || eventType === "invoice.payment_succeeded";
 
@@ -111,7 +108,32 @@ export async function POST(req: Request) {
         if (applyErr) throw new Error(applyErr.message);
       }
 
-      // 5) finaliza como processed
+      const isInvoiceFailed = eventType === "invoice.payment_failed";
+      if (isInvoiceFailed) {
+        const invoice = stripeEvent.data.object;
+        const gatewayInvoiceId: string = invoice.id;
+
+        const failedAt =
+          invoice.status_transitions?.finalized_at != null
+            ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
+            : null;
+
+        // melhor esforço de motivo
+        const reason =
+          invoice?.last_finalization_error?.message ??
+          invoice?.last_payment_error?.message ??
+          "stripe invoice.payment_failed";
+
+        const { error: failErr } = await admin.rpc("apply_invoice_payment_failed", {
+          p_gateway_invoice_id: gatewayInvoiceId,
+          p_failed_at: failedAt,
+          p_reason: reason,
+        });
+
+        if (failErr) throw new Error(failErr.message);
+      }
+
+      // finaliza como processed
       const { error: doneErr } = await admin.rpc(
         "mark_stripe_event_processed",
         { p_id: evt.id }
