@@ -16,7 +16,6 @@ export async function POST(req: Request) {
     const supabase = getSupabaseAdmin();
     const body = await req.json();
 
-    // Espera-se que o worker receba eventos Stripe já normalizados
     const eventType: string | undefined = body?.type;
     const payload = body?.data?.object;
 
@@ -24,27 +23,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, ignored: true });
     }
 
-    // --- DESBLOQUEIO AUTOMÁTICO AO PAGAR INVOICE ---
+    // 🔓 DESBLOQUEIO AUTOMÁTICO QUANDO INVOICE É PAGA
     if (eventType === "invoice.paid") {
-      const stripeInvoiceId = payload.id as string | undefined;
+      const gatewayInvoiceId = payload.id as string | undefined;
 
-      if (!stripeInvoiceId) {
+      if (!gatewayInvoiceId) {
         return NextResponse.json({ ok: true, ignored: true });
       }
 
-      // 1) Resolver invoice interna pelo stripe_invoice_id
+      // 1) Resolver invoice interna pelo gateway_invoice_id
       const { data: inv, error: invErr } = await supabase
         .from("invoices")
         .select("id, client_id, status")
-        .eq("stripe_invoice_id", stripeInvoiceId)
+        .eq("gateway_invoice_id", gatewayInvoiceId)
         .maybeSingle();
 
       if (invErr || !inv) {
-        // invoice não encontrada internamente → ignora (idempotência)
+        // idempotência: invoice ainda não existe internamente
         return NextResponse.json({ ok: true, ignored: true });
       }
 
-      // 2) Desbloquear cliente automaticamente (se aplicável)
+      // 2) Desbloqueio automático (restricted → active)
       await supabase.rpc("unlock_client_if_invoice_paid", {
         p_client_id: inv.client_id,
         p_invoice_id: inv.id,
@@ -59,7 +58,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // Outros eventos seguem o fluxo já existente
     return NextResponse.json({ ok: true, ignored: true });
   } catch (e: any) {
     return NextResponse.json(
