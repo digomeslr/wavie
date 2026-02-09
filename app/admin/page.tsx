@@ -6,6 +6,7 @@ type BarracaRow = {
   id: string;
   nome: string | null;
   slug: string | null;
+  client_id: string | null;
 };
 
 export default async function AdminPage(props: {
@@ -16,12 +17,16 @@ export default async function AdminPage(props: {
 
   const { data: barraca, error } = await supabase
     .from("barracas")
-    .select("id,nome,slug")
+    .select("id,nome,slug,client_id")
     .eq("id", barracaId)
     .maybeSingle<BarracaRow>();
 
   if (error) throw new Error(error.message);
 
-  // se faltar b ou não achar, deixa o client mostrar o estado vazio bonitinho
-  return <AdminClient initialBarraca={barraca ?? null} />;
+  return (
+    <AdminClient
+      initialBarraca={barraca ?? null}
+      clientId={barraca?.client_id ?? null}
+    />
+  );
 }
