@@ -13,6 +13,11 @@ function getAdminSupabase() {
   });
 }
 
+function isTestDashboard() {
+  const v = (process.env.STRIPE_DASHBOARD_MODE ?? "test").toLowerCase();
+  return v !== "live";
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -26,7 +31,7 @@ export async function GET(req: Request) {
 
     const { data: invoice, error } = await supabase
       .from("invoices")
-      .select("id, gateway_invoice_id, status, payment_mode, created_at")
+      .select("id, gateway_invoice_id, status, created_at")
       .eq("client_id", clientId)
       .in("status", ["open", "sent"])
       .order("created_at", { ascending: false })
@@ -39,10 +44,9 @@ export async function GET(req: Request) {
       return NextResponse.redirect("/admin/billing", 302);
     }
 
-    const stripeUrl =
-      invoice.payment_mode === "test"
-        ? `https://dashboard.stripe.com/test/invoices/${invoice.gateway_invoice_id}`
-        : `https://dashboard.stripe.com/invoices/${invoice.gateway_invoice_id}`;
+    const stripeUrl = isTestDashboard()
+      ? `https://dashboard.stripe.com/test/invoices/${invoice.gateway_invoice_id}`
+      : `https://dashboard.stripe.com/invoices/${invoice.gateway_invoice_id}`;
 
     return NextResponse.redirect(stripeUrl, 302);
   } catch (e: any) {
