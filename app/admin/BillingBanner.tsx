@@ -1,50 +1,38 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 
 type BannerState = {
-  state: "active" | "restricted" | "blocked";
+  state: "restricted" | "blocked" | "active";
   title: string | null;
   message: string | null;
   cta_label: string | null;
   cta_action: "open_billing" | "open_support" | null;
 };
 
-type Props = {
-  clientId: string;
-};
-
-export function BillingBanner({ clientId }: Props) {
+export function BillingBanner({ clientId }: { clientId: string }) {
   const [data, setData] = useState<BannerState | null>(null);
   const [loading, setLoading] = useState(true);
-
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
 
   useEffect(() => {
     let mounted = true;
 
     async function load() {
-      setLoading(true);
+      try {
+        const res = await fetch(
+          `/api/admin/billing-banner-state?client_id=${clientId}`,
+          { cache: "no-store" }
+        );
 
-      const { data, error } = await supabase.rpc(
-        "get_client_billing_banner_state",
-        { p_client_id: clientId }
-      );
+        if (!res.ok) return;
 
-      if (!mounted) return;
-
-      if (error) {
-        console.error("BillingBanner error:", error.message);
-        setData(null);
-      } else {
-        setData(Array.isArray(data) ? data[0] : data);
+        const json = await res.json();
+        if (mounted) setData(json ?? null);
+      } catch {
+        // silêncio: banner não pode quebrar o admin
+      } finally {
+        if (mounted) setLoading(false);
       }
-
-      setLoading(false);
     }
 
     load();
@@ -53,45 +41,37 @@ export function BillingBanner({ clientId }: Props) {
     };
   }, [clientId]);
 
-  if (loading || !data || data.state === "active") return null;
+  // 🔒 Guards de segurança
+  if (loading) return null;
+  if (!data) return null;
+  if (!data.title || !data.message) return null;
 
   function handleCTA() {
+    if (!data?.cta_action) return;
+
     if (data.cta_action === "open_billing") {
-      // ajuste a rota se necessário
       window.location.href = "/admin/billing";
+      return;
     }
 
     if (data.cta_action === "open_support") {
-      window.location.href = "/admin/suporte";
+      window.location.href = "/admin/support";
+      return;
     }
   }
 
   return (
-    <div
-      className={`w-full rounded-xl border p-4 mb-4 ${
-        data.state === "restricted"
-          ? "bg-yellow-50 border-yellow-300"
-          : "bg-red-50 border-red-300"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-4">
+    <div className="mb-6 rounded-2xl border border-yellow-900/40 bg-yellow-950/40 p-4 text-yellow-100">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">
-            {data.title}
-          </h3>
-          <p className="mt-1 text-sm text-gray-700">
-            {data.message}
-          </p>
+          <div className="text-sm font-semibold">{data.title}</div>
+          <div className="mt-1 text-sm text-yellow-200/90">{data.message}</div>
         </div>
 
-        {data.cta_label && (
+        {data.cta_label && data.cta_action && (
           <button
             onClick={handleCTA}
-            className={`shrink-0 rounded-lg px-4 py-2 text-sm font-medium ${
-              data.state === "restricted"
-                ? "bg-yellow-600 text-white hover:bg-yellow-700"
-                : "bg-red-600 text-white hover:bg-red-700"
-            }`}
+            className="rounded-xl bg-yellow-400 px-4 py-2 text-sm font-semibold text-yellow-950 hover:bg-yellow-300"
           >
             {data.cta_label}
           </button>
