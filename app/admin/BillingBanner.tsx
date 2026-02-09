@@ -46,16 +46,19 @@ export function BillingBanner({ clientId }: { clientId: string }) {
   if (!data) return null;
   if (!data.title || !data.message) return null;
 
-  function handleCTA() {
-    if (!data.cta_action) return;
+  // ✅ Captura valores após os guards (TS fica 100% feliz)
+  const ctaAction = data.cta_action;
+  const ctaLabel = data.cta_label;
 
-    if (data.cta_action === "open_billing") {
-      // Backend resolve invoice aberta ou Stripe
+  function handleCTA() {
+    if (!ctaAction) return;
+
+    if (ctaAction === "open_billing") {
       window.location.href = `/api/admin/billing?client_id=${clientId}`;
       return;
     }
 
-    if (data.cta_action === "open_support") {
+    if (ctaAction === "open_support") {
       window.location.href = "/admin/support";
       return;
     }
@@ -66,17 +69,15 @@ export function BillingBanner({ clientId }: { clientId: string }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-sm font-semibold">{data.title}</div>
-          <div className="mt-1 text-sm text-yellow-200/90">
-            {data.message}
-          </div>
+          <div className="mt-1 text-sm text-yellow-200/90">{data.message}</div>
         </div>
 
-        {data.cta_label && data.cta_action && (
+        {ctaLabel && ctaAction && (
           <button
             onClick={handleCTA}
             className="rounded-xl bg-yellow-400 px-4 py-2 text-sm font-semibold text-yellow-950 hover:bg-yellow-300"
           >
-            {data.cta_label}
+            {ctaLabel}
           </button>
         )}
       </div>
