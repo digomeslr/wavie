@@ -1,3 +1,4 @@
+// deploy-bump: ensure /admin/billing exists
 import Link from "next/link";
 
 export default function AdminBillingPage() {
@@ -34,3 +35,5 @@ export default function AdminBillingPage() {
     </div>
   );
 }
+
+
