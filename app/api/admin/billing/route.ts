@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import Stripe from "stripe";
 
 function getAdminSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -13,9 +14,10 @@ function getAdminSupabase() {
   });
 }
 
-function isTestDashboard() {
-  const v = (process.env.STRIPE_DASHBOARD_MODE ?? "test").toLowerCase();
-  return v !== "live";
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+  return new Stripe(key, { apiVersion: "2024-06-20" as any });
 }
 
 export async function GET(req: Request) {
@@ -41,14 +43,19 @@ export async function GET(req: Request) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     if (!invoice?.gateway_invoice_id) {
-      return NextResponse.redirect("/admin/billing", 302);
+      return NextResponse.redirect(new URL("/admin/billing", req.url), 302);
     }
 
-    const stripeUrl = isTestDashboard()
-      ? `https://dashboard.stripe.com/test/invoices/${invoice.gateway_invoice_id}`
-      : `https://dashboard.stripe.com/invoices/${invoice.gateway_invoice_id}`;
+    const stripe = getStripe();
+    const st = await stripe.invoices.retrieve(invoice.gateway_invoice_id);
 
-    return NextResponse.redirect(stripeUrl, 302);
+    const publicUrl = st.hosted_invoice_url ?? st.invoice_pdf;
+    if (!publicUrl) {
+      // fallback: se por algum motivo não houver link público, manda pro admin interno
+      return NextResponse.redirect(new URL("/admin/billing", req.url), 302);
+    }
+
+    return NextResponse.redirect(publicUrl, 302);
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "unexpected_error" }, { status: 500 });
   }
