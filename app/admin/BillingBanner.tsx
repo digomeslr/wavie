@@ -29,7 +29,7 @@ export function BillingBanner({ clientId }: { clientId: string }) {
         const json = await res.json();
         if (mounted) setData(json ?? null);
       } catch {
-        // silêncio: banner não pode quebrar o admin
+        // banner nunca pode quebrar o admin
       } finally {
         if (mounted) setLoading(false);
       }
@@ -41,16 +41,17 @@ export function BillingBanner({ clientId }: { clientId: string }) {
     };
   }, [clientId]);
 
-  // 🔒 Guards de segurança
+  // 🔒 Guards — segurança total
   if (loading) return null;
   if (!data) return null;
   if (!data.title || !data.message) return null;
 
   function handleCTA() {
-    if (!data?.cta_action) return;
+    if (!data.cta_action) return;
 
     if (data.cta_action === "open_billing") {
-      window.location.href = "/admin/billing";
+      // Backend resolve invoice aberta ou Stripe
+      window.location.href = `/api/admin/billing?client_id=${clientId}`;
       return;
     }
 
@@ -65,7 +66,9 @@ export function BillingBanner({ clientId }: { clientId: string }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-sm font-semibold">{data.title}</div>
-          <div className="mt-1 text-sm text-yellow-200/90">{data.message}</div>
+          <div className="mt-1 text-sm text-yellow-200/90">
+            {data.message}
+          </div>
         </div>
 
         {data.cta_label && data.cta_action && (
