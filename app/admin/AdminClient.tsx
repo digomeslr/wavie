@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
-import BillingBanner from "./BillingBanner";
+import { BillingBanner } from "./BillingBanner";
 
 
 
