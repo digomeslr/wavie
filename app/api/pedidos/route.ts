@@ -73,4 +73,4 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: e?.message ?? "Erro inesperado" }, { status: 500 });
   }
 }
-digomeslr@MacBook-Air-de-Diego praiapay % 
+
