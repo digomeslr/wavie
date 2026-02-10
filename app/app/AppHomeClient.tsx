@@ -49,7 +49,6 @@ const NEXT: Record<Tone, Tone | null> = {
 };
 
 function toneClasses(tone: Tone) {
-  // “vida” + contraste: gradiente leve, glow e UI mais chamativa
   if (tone === "recebido") {
     return {
       colTitle: "text-sky-200",
@@ -86,7 +85,6 @@ function toneClasses(tone: Tone) {
       cardBg: "from-emerald-500/12 to-white/4",
     };
   }
-  // entregue
   return {
     colTitle: "text-white/85",
     colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)]",
@@ -102,7 +100,12 @@ function toneClasses(tone: Tone) {
 function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   const t = toneClasses(tone);
   return (
-    <span className={["inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium", t.pill].join(" ")}>
+    <span
+      className={[
+        "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium",
+        t.pill,
+      ].join(" ")}
+    >
       {children}
     </span>
   );
@@ -140,7 +143,12 @@ function ActionButton({
 function QtyChip({ tone, n }: { tone: Tone; n: number }) {
   const t = toneClasses(tone);
   return (
-    <span className={["inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold", t.chip].join(" ")}>
+    <span
+      className={[
+        "inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold",
+        t.chip,
+      ].join(" ")}
+    >
       {n}x
     </span>
   );
@@ -160,7 +168,7 @@ function LocalBadge({ tone, local }: { tone: Tone; local: string | null }) {
       title="Local de entrega"
     >
       <span className="text-white/80">📍</span>
-      <span className="text-white/90">Local:</span>
+      <span className="text-white/85">Local:</span>
       <span className="text-white">{text}</span>
     </div>
   );
@@ -189,6 +197,25 @@ function OrderItems({ tone, items }: { tone: Tone; items?: PedidoItem[] }) {
   );
 }
 
+function minutesSince(createdAt: string) {
+  const ms = Date.now() - new Date(createdAt).getTime();
+  return Math.max(0, Math.floor(ms / 60000));
+}
+
+function AgeBadge({ mins }: { mins: number }) {
+  // thresholds simples e efetivos
+  const tone =
+    mins >= 25 ? "border-rose-400/25 bg-rose-400/10 text-rose-200"
+    : mins >= 12 ? "border-amber-400/25 bg-amber-400/10 text-amber-200"
+    : "border-emerald-400/25 bg-emerald-400/10 text-emerald-200";
+
+  return (
+    <span className={["inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold", tone].join(" ")}>
+      ⏱ {mins} min
+    </span>
+  );
+}
+
 function OrderCard({
   p,
   onAdvance,
@@ -203,6 +230,7 @@ function OrderCard({
   const status = normalizeStatus(p.status);
   const next = NEXT[status];
   const t = toneClasses(status);
+  const mins = minutesSince(p.created_at);
 
   const buttonLabel =
     status === "recebido"
@@ -229,14 +257,16 @@ function OrderCard({
           <div className="text-sm font-semibold tracking-tight text-white">
             Pedido <span className="text-white/70">#{p.id.slice(0, 6).toUpperCase()}</span>
           </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <AgeBadge mins={mins} />
+            <Pill tone={status}>{status}</Pill>
+          </div>
           <div className="mt-1 text-[11px] text-white/45">
             <span className="text-white/60">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
           </div>
         </div>
-        <Pill tone={status}>{status}</Pill>
       </div>
 
-      {/* LOCAL em destaque */}
       <div className="mt-3">
         <LocalBadge tone={status} local={p.local} />
       </div>
@@ -255,14 +285,86 @@ function OrderCard({
   );
 }
 
+function Toggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!value)}
+      className={[
+        "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold",
+        "border-white/10 bg-white/6 text-white/80 hover:bg-white/10 hover:border-white/20",
+      ].join(" ")}
+      aria-pressed={value}
+    >
+      <span className={["h-2.5 w-2.5 rounded-full", value ? "bg-emerald-400" : "bg-white/25"].join(" ")} />
+      {label}
+    </button>
+  );
+}
+
+// Som via WebAudio (sem assets externos)
+function beep(kind: "new" | "ready") {
+  try {
+    const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as any;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+
+    // "new": tom mais agudo curto; "ready": tom mais grave/cheio
+    const freq = kind === "new" ? 880 : 520;
+
+    o.type = "sine";
+    o.frequency.value = freq;
+
+    g.gain.value = 0.0001;
+    o.connect(g);
+    g.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    // ataque
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+    // release
+    g.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "new" ? 0.14 : 0.22));
+
+    o.start(now);
+    o.stop(now + (kind === "new" ? 0.16 : 0.25));
+
+    o.onended = () => {
+      try { ctx.close(); } catch {}
+    };
+  } catch {}
+}
+
+function vibrate(pattern: number | number[]) {
+  try {
+    if (navigator?.vibrate) navigator.vibrate(pattern);
+  } catch {}
+}
+
 export default function AppHomeClient() {
   const [barracaId, setBarracaId] = useState<string | null>(null);
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // PRO: alertas
+  const [alertsEnabled, setAlertsEnabled] = useState(false);
+
+  // PRO: entregue compacto
+  const [showAllDelivered, setShowAllDelivered] = useState(false);
+
   const stopPollingRef = useRef(false);
   const lastHash = useRef("");
   const seenIdsRef = useRef<Set<string>>(new Set());
+  const prevStatusRef = useRef<Map<string, Tone>>(new Map());
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -282,15 +384,32 @@ export default function AppHomeClient() {
     };
   }, []);
 
-  function markNew(arr: PedidoRow[]) {
+  function markNewAndTransitions(arr: PedidoRow[]) {
     const seen = seenIdsRef.current;
+    const prevStatus = prevStatusRef.current;
+
+    let hasNewRecebido = false;
+    let hasTurnedPronto = false;
+
     const newly = new Set<string>();
 
     for (const p of arr) {
-      if (!seen.has(p.id)) newly.add(p.id);
+      const tone = normalizeStatus(p.status);
+
+      if (!seen.has(p.id)) {
+        newly.add(p.id);
+        if (tone === "recebido") hasNewRecebido = true;
+      } else {
+        const prev = prevStatus.get(p.id);
+        if (prev && prev !== tone && tone === "pronto") {
+          hasTurnedPronto = true;
+        }
+      }
+
+      prevStatus.set(p.id, tone);
     }
 
-    // atualiza o seen
+    // atualiza seen
     for (const p of arr) seen.add(p.id);
 
     if (newly.size > 0) {
@@ -300,7 +419,6 @@ export default function AppHomeClient() {
         return merged;
       });
 
-      // remove destaque depois de 12s (sem som)
       window.setTimeout(() => {
         setNewIds((prev) => {
           const next = new Set(prev);
@@ -308,6 +426,17 @@ export default function AppHomeClient() {
           return next;
         });
       }, 12000);
+    }
+
+    // alertas (opcionais)
+    if (alertsEnabled) {
+      if (hasNewRecebido) {
+        beep("new");
+        vibrate([60, 40, 60]);
+      } else if (hasTurnedPronto) {
+        beep("ready");
+        vibrate([120]);
+      }
     }
   }
 
@@ -321,10 +450,8 @@ export default function AppHomeClient() {
     const json = await res.json();
     const next = (json?.data ?? []) as PedidoRow[];
 
-    // marca pedidos novos (antes do hash, pois hash pode mudar pouco)
-    markNew(next);
+    markNewAndTransitions(next);
 
-    // evita re-render desnecessário
     const hash = JSON.stringify(next);
     if (hash !== lastHash.current) {
       lastHash.current = hash;
@@ -342,7 +469,7 @@ export default function AppHomeClient() {
 
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [barracaId]);
+  }, [barracaId, alertsEnabled]);
 
   async function advanceStatus(id: string, current: Tone) {
     const next = NEXT[current];
@@ -363,13 +490,14 @@ export default function AppHomeClient() {
       const json = await res.json();
 
       if (!res.ok) {
-        // rollback
         setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
         alert(json?.error ?? "Erro ao atualizar status");
       } else {
         const updated = json?.data as PedidoRow;
         if (updated?.id) {
-          setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: updated.status } : p)));
+          setPedidos((prev) =>
+            prev.map((p) => (p.id === id ? { ...p, status: updated.status } : p))
+          );
         }
       }
     } catch (e: any) {
@@ -405,6 +533,11 @@ export default function AppHomeClient() {
     };
   }, [pedidos]);
 
+  const deliveredToShow = useMemo(() => {
+    if (showAllDelivered) return grouped.entregue;
+    return grouped.entregue.slice(0, 5);
+  }, [grouped.entregue, showAllDelivered]);
+
   if (!barracaId) {
     return (
       <div className="wavie-card p-6 text-sm text-[color:var(--text-2)]">
@@ -413,7 +546,17 @@ export default function AppHomeClient() {
     );
   }
 
-  const Column = ({ tone, title, items }: { tone: Tone; title: string; items: PedidoRow[] }) => {
+  const Column = ({
+    tone,
+    title,
+    items,
+    compactFooter,
+  }: {
+    tone: Tone;
+    title: string;
+    items: PedidoRow[];
+    compactFooter?: React.ReactNode;
+  }) => {
     const t = toneClasses(tone);
     return (
       <div className={["wavie-card p-4", t.colGlow].join(" ")}>
@@ -439,16 +582,81 @@ export default function AppHomeClient() {
             ))
           )}
         </div>
+
+        {compactFooter ? <div className="mt-4">{compactFooter}</div> : null}
       </div>
     );
   };
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
-      <Column tone="recebido" title="Recebido" items={grouped.recebido} />
-      <Column tone="preparando" title="Preparando" items={grouped.preparando} />
-      <Column tone="pronto" title="Pronto" items={grouped.pronto} />
-      <Column tone="entregue" title="Entregue" items={grouped.entregue} />
+    <div className="space-y-4">
+      {/* Barra de controles (Operação PRO) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-white/50">
+          Atualiza a cada <span className="text-white/80 font-semibold">20s</span> •
+          Alertas opcionais para cozinha/garçom.
+        </div>
+        <div className="flex items-center gap-2">
+          <Toggle
+            label="Som/Vibração"
+            value={alertsEnabled}
+            onChange={(v) => {
+              setAlertsEnabled(v);
+              // “primeiro toque” desbloqueia áudio em alguns navegadores
+              if (v) beep("new");
+            }}
+          />
+        </div>
+      </div>
+
+      {/* MOBILE/TABLET: Pronto no topo e “sticky” */}
+      <div className="lg:hidden">
+        <div className="sticky top-2 z-20">
+          <Column tone="pronto" title="Pronto" items={grouped.pronto} />
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <Column tone="recebido" title="Recebido" items={grouped.recebido} />
+          <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+          <Column
+            tone="entregue"
+            title="Entregue"
+            items={deliveredToShow}
+            compactFooter={
+              grouped.entregue.length > 5 ? (
+                <button
+                  onClick={() => setShowAllDelivered((v) => !v)}
+                  className="w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:border-white/20"
+                >
+                  {showAllDelivered ? "Ver menos" : `Ver mais (${grouped.entregue.length - 5})`}
+                </button>
+              ) : null
+            }
+          />
+        </div>
+      </div>
+
+      {/* DESKTOP: 4 colunas */}
+      <div className="hidden lg:grid lg:grid-cols-4 lg:gap-4">
+        <Column tone="recebido" title="Recebido" items={grouped.recebido} />
+        <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+        <Column tone="pronto" title="Pronto" items={grouped.pronto} />
+        <Column
+          tone="entregue"
+          title="Entregue"
+          items={deliveredToShow}
+          compactFooter={
+            grouped.entregue.length > 5 ? (
+              <button
+                onClick={() => setShowAllDelivered((v) => !v)}
+                className="w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:border-white/20"
+              >
+                {showAllDelivered ? "Ver menos" : `Ver mais (${grouped.entregue.length - 5})`}
+              </button>
+            ) : null
+          }
+        />
+      </div>
     </div>
   );
 }
