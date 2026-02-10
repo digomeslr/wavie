@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type PedidoItem = {
   name?: string | null;
   title?: string | null;
   produto?: string | null;
+  produto_id?: string | null;
   quantity?: number | null;
   qty?: number | null;
   unit_price?: number | null;
@@ -20,7 +21,7 @@ type PedidoRow = {
   total: number | null;
   created_at: string;
   barraca_id: string;
-  items?: PedidoItem[] | null; // opcional (se o endpoint devolver)
+  items?: PedidoItem[] | null;
 };
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -70,7 +71,11 @@ function ButtonLink({ href, children }: { href: string; children: React.ReactNod
 function OrderItemsPreview({ items }: { items?: PedidoItem[] | null }) {
   const normalized = (items ?? [])
     .map((it) => {
-      const name = it.name ?? it.title ?? it.produto ?? "Item";
+      const name =
+        it.name ??
+        it.title ??
+        it.produto ??
+        (it.produto_id ? `Produto ${String(it.produto_id).slice(0, 6).toUpperCase()}` : "Item");
       const qty = it.quantity ?? it.qty ?? 1;
       return { name, qty };
     })
@@ -111,27 +116,25 @@ function OrderCard({ p }: { p: PedidoRow }) {
 
   return (
     <div className="wavie-card-soft p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="text-sm font-semibold text-[color:var(--text)]">
-              Pedido #{p.id.slice(0, 6).toUpperCase()}
-            </div>
-            <Pill tone={tone}>{status}</Pill>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-sm font-semibold text-[color:var(--text)]">
+            Pedido #{p.id.slice(0, 6).toUpperCase()}
           </div>
-
-          <div className="mt-2 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
-            <span>
-              Local: <span className="text-[color:var(--text-2)]">{p.local ?? "—"}</span>
-            </span>
-            <span>
-              Criado:{" "}
-              <span className="text-[color:var(--text-2)]">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
-            </span>
-          </div>
-
-          <OrderItemsPreview items={p.items ?? null} />
+          <Pill tone={tone}>{status}</Pill>
         </div>
+
+        <div className="mt-2 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
+          <span>
+            Local: <span className="text-[color:var(--text-2)]">{p.local ?? "—"}</span>
+          </span>
+          <span>
+            Criado:{" "}
+            <span className="text-[color:var(--text-2)]">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
+          </span>
+        </div>
+
+        <OrderItemsPreview items={p.items ?? null} />
       </div>
     </div>
   );
@@ -174,22 +177,30 @@ function parseBarracaIdFromLocation(): string | null {
 
   const url = new URL(window.location.href);
 
-  // 1) query: ?barraca_id=<uuid>
   const q = url.searchParams.get("barraca_id");
   if (q && q.length >= 8) return q;
 
-  // 2) paths: /app/barraca/<uuid> OR /app/<uuid>
   const parts = url.pathname.split("/").filter(Boolean);
 
-  // ex: ["app","barraca","<uuid>"]
   const idxBarraca = parts.indexOf("barraca");
   if (idxBarraca >= 0 && parts[idxBarraca + 1]) return parts[idxBarraca + 1];
 
-  // ex: ["app","<uuid>"]
   const idxApp = parts.indexOf("app");
   if (idxApp >= 0 && parts[idxApp + 1]) return parts[idxApp + 1];
 
   return null;
+}
+
+// hash simples para não “piscar” quando não mudou nada
+function makePedidosHash(rows: PedidoRow[]) {
+  return rows
+    .map((p) => {
+      const items = (p.items ?? [])
+        .map((it) => `${it.produto_id ?? it.name ?? ""}:${it.quantity ?? it.qty ?? 1}`)
+        .join("|");
+      return `${p.id}:${p.status}:${p.local ?? ""}:${p.created_at}:${items}`;
+    })
+    .join(";;");
 }
 
 export default function AppHomeClient({ barracaId }: { barracaId: string | null }) {
@@ -198,7 +209,9 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
 
-  // Resolve barracaId automaticamente pela URL (sem hooks do Next)
+  const lastHashRef = useRef<string>("");
+  const firstLoadRef = useRef<boolean>(true);
+
   useEffect(() => {
     const id = parseBarracaIdFromLocation();
     if (id) setEffectiveBarracaId(id);
@@ -212,7 +225,6 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // Apenas indicadores operacionais (sem $$)
   const pedidosHoje = useMemo(() => {
     const now = new Date();
     return pedidos.filter((p) => {
@@ -225,7 +237,6 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
     return pedidos.filter((p) => normalizeStatus(p.status) === "preparando").length;
   }, [pedidos]);
 
-  // Agrupar para o mini-kanban
   const grouped = useMemo(() => {
     const rec: PedidoRow[] = [];
     const prep: PedidoRow[] = [];
@@ -240,8 +251,13 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
       else rec.push(p);
     }
 
-    // mais recentes primeiro
-    const sortByNew = (a: PedidoRow, b: PedidoRow) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    // sort estável: created_at desc, e desempata por id
+    const sortByNew = (a: PedidoRow, b: PedidoRow) => {
+      const ta = new Date(a.created_at).getTime();
+      const tb = new Date(b.created_at).getTime();
+      if (tb !== ta) return tb - ta;
+      return String(b.id).localeCompare(String(a.id));
+    };
 
     return {
       recebido: rec.sort(sortByNew),
@@ -251,7 +267,6 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
     };
   }, [pedidos]);
 
-  // Carregar pedidos
   useEffect(() => {
     let cancelled = false;
 
@@ -260,10 +275,12 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
 
       if (!effectiveBarracaId) {
         setPedidos([]);
+        lastHashRef.current = "";
         return;
       }
 
-      setLoading(true);
+      // só mostra "loading" no primeiro load (evita piscada)
+      if (firstLoadRef.current) setLoading(true);
 
       try {
         const res = await fetch(`/api/app/pedidos?barraca_id=${encodeURIComponent(effectiveBarracaId)}&limit=50`, {
@@ -276,20 +293,34 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
         if (!res.ok) {
           setErrorMsg(json?.error ?? "Erro ao carregar pedidos");
           setPedidos([]);
+          lastHashRef.current = "";
         } else {
-          setPedidos((json?.data ?? []) as PedidoRow[]);
+          const next = (json?.data ?? []) as PedidoRow[];
+          const nextHash = makePedidosHash(next);
+
+          // só atualiza estado se mudou de verdade (evita re-render/piscada)
+          if (nextHash !== lastHashRef.current) {
+            lastHashRef.current = nextHash;
+            setPedidos(next);
+          }
         }
       } catch (e: any) {
         if (cancelled) return;
         setErrorMsg(e?.message ?? "Erro de rede");
         setPedidos([]);
+        lastHashRef.current = "";
       }
 
-      setLoading(false);
+      if (firstLoadRef.current) {
+        firstLoadRef.current = false;
+        setLoading(false);
+      }
     }
 
     load();
-    const t = window.setInterval(load, 5000); // atualização a cada 5s (sensação de “tempo real”)
+
+    // refresh menos agressivo
+    const t = window.setInterval(load, 12000); // 12s (bem menos intrusivo)
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -303,7 +334,6 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
         <div className="mt-1 text-sm text-[color:var(--text-2)]">Pedidos em tempo real para cozinha/garçom (ambiente TEST).</div>
       </div>
 
-      {/* Indicadores operacionais (sem finanças) */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="wavie-card p-4">
           <div className="text-xs text-[color:var(--text-2)]">Pedidos hoje</div>
@@ -321,7 +351,6 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
         </div>
       </div>
 
-      {/* Ações úteis para TEST (sem billing no operacional) */}
       <div className="flex flex-wrap gap-3">
         <ButtonLink href="/b/nelsaodrinks">Abrir cardápio (nelsaodrinks)</ButtonLink>
         <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">Conectar barraca (exemplo)</ButtonLink>
@@ -356,7 +385,7 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
       <div className="wavie-card p-5">
         <div className="text-sm font-semibold text-[color:var(--text)]">Foco: execução</div>
         <div className="mt-1 text-sm text-[color:var(--text-2)]">Itens sempre visíveis, status claro e leitura rápida em celular/tablet.</div>
-        <div className="mt-3 text-xs text-[color:var(--muted)]">Atualiza automaticamente a cada 5s para sensação de tempo real.</div>
+        <div className="mt-3 text-xs text-[color:var(--muted)]">Atualiza automaticamente (12s) e só re-renderiza quando algo muda.</div>
       </div>
     </div>
   );
