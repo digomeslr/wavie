@@ -9,10 +9,21 @@ export default function AppBarracaPage({
 }: {
   params: { barraca_id: string };
 }) {
-  // garante string e decodifica
   const barracaId = params?.barraca_id
     ? decodeURIComponent(params.barraca_id)
     : null;
 
-  return <AppHomeClient barracaId={barracaId} />;
+  return (
+    <>
+      {/* MARCADOR: se você NÃO ver isso na tela, essa rota não está sendo usada */}
+      <div className="wavie-card p-3 text-xs text-[color:var(--muted)]">
+        ROUTE_OK: /app/barraca/[barraca_id] • param:{" "}
+        <span className="text-[color:var(--text)]">{barracaId ?? "null"}</span>
+      </div>
+
+      <div className="mt-4">
+        <AppHomeClient barracaId={barracaId} />
+      </div>
+    </>
+  );
 }
