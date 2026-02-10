@@ -2,6 +2,10 @@
  * GET /api/app/pedidos?barraca_id=<uuid>&limit=50
  * Painel operacional — pedidos + itens com nome real do produto
  */
+
+import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+
 export async function GET(req: Request) {
     try {
       const supabase = supabaseAdmin();
