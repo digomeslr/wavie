@@ -1,8 +1,17 @@
-// app/app/AppHomeClient.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+
+type PedidoItem = {
+  name?: string | null;
+  title?: string | null;
+  produto?: string | null;
+  quantity?: number | null;
+  qty?: number | null;
+  unit_price?: number | null;
+  price?: number | null;
+  total?: number | null;
+};
 
 type PedidoRow = {
   id: string;
@@ -11,7 +20,30 @@ type PedidoRow = {
   total: number | null;
   created_at: string;
   barraca_id: string;
+  items?: PedidoItem[] | null; // opcional (se o endpoint devolver)
 };
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
+
+function formatMoneyBRL(v: number | null | undefined) {
+  if (v == null) return "—";
+  try {
+    return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  } catch {
+    return `R$ ${v}`;
+  }
+}
+
+function normalizeStatus(s: string | null | undefined) {
+  const x = (s ?? "").toLowerCase().trim();
+  if (x === "recebido") return "recebido";
+  if (x === "preparando" || x === "em_preparo" || x === "em preparo") return "preparando";
+  if (x === "pronto") return "pronto";
+  if (x === "entregue" || x === "finalizado") return "entregue";
+  return "recebido";
+}
 
 function StatCard({
   label,
@@ -25,7 +57,9 @@ function StatCard({
   return (
     <div className="wavie-card p-4">
       <div className="text-xs text-[color:var(--text-2)]">{label}</div>
-      <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">
+        {value}
+      </div>
       {hint ? (
         <div className="mt-1 text-xs text-[color:var(--muted)]">{hint}</div>
       ) : null}
@@ -33,112 +67,177 @@ function StatCard({
   );
 }
 
-function StatusPill({ status }: { status: string }) {
-  const label = status?.toLowerCase?.() ?? "—";
+function Pill({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "ok" | "warn" | "danger" }) {
+  const toneClass =
+    tone === "ok"
+      ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+      : tone === "warn"
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-200"
+      : tone === "danger"
+      ? "border-rose-500/20 bg-rose-500/10 text-rose-200"
+      : "border-[color:var(--border)] bg-[color:var(--surface-2)] text-[color:var(--text-2)]";
+
   return (
-    <span className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface-2)] px-2.5 py-1 text-xs text-[color:var(--text-2)]">
-      {label}
+    <span className={cx("inline-flex items-center rounded-full border px-2.5 py-1 text-xs", toneClass)}>
+      {children}
     </span>
   );
 }
 
-function formatMoneyBRL(v: number | null | undefined) {
-  if (v == null) return "—";
-  try {
-    return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-  } catch {
-    return `R$ ${v}`;
-  }
+function ButtonLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      className="wavie-btn"
+    >
+      {children}
+    </a>
+  );
 }
 
-function EmptyOrders() {
-  return (
-    <div className="wavie-card p-6">
-      <div className="text-sm font-semibold">Pedidos</div>
-      <div className="mt-1 text-sm text-[color:var(--text-2)]">
-        Nenhum pedido no momento.
-      </div>
+function OrderItemsPreview({ items }: { items?: PedidoItem[] | null }) {
+  const normalized = (items ?? [])
+    .map((it) => {
+      const name = it.name ?? it.title ?? it.produto ?? "Item";
+      const qty = it.quantity ?? it.qty ?? 1;
+      const unit = it.unit_price ?? it.price ?? null;
+      const total = it.total ?? (unit != null ? Number(unit) * Number(qty) : null);
+      return { name, qty, total };
+    })
+    .filter((x) => x.name);
 
-      <div className="mt-4 wavie-card-soft p-4 text-sm text-[color:var(--text-2)]">
-        Este painel é{" "}
-        <strong className="text-[color:var(--text)]">operacional</strong>. Quando
-        um pedido entrar, ele aparecerá aqui em tempo real, com{" "}
-        <strong className="text-[color:var(--text)]">
-          itens sempre visíveis
-        </strong>
-        , status claro e ações rápidas.
-        <div className="mt-2 text-xs text-[color:var(--muted)]">
-          Otimizado para uso contínuo em celular e tablet.
+  if (!normalized.length) {
+    return (
+      <div className="mt-2 text-xs text-[color:var(--muted)]">
+        Itens: <span className="text-[color:var(--text-2)]">—</span>
+      </div>
+    );
+  }
+
+  const max = 3;
+  const head = normalized.slice(0, max);
+
+  return (
+    <div className="mt-2 space-y-1 text-xs">
+      {head.map((it, idx) => (
+        <div key={idx} className="flex items-center justify-between gap-3 text-[color:var(--text-2)]">
+          <div className="min-w-0 truncate">
+            <span className="text-[color:var(--muted)]">{it.qty}x</span>{" "}
+            <span className="text-[color:var(--text)]">{it.name}</span>
+          </div>
+          <div className="shrink-0 text-[color:var(--muted)]">
+            {it.total != null ? formatMoneyBRL(Number(it.total)) : "—"}
+          </div>
+        </div>
+      ))}
+      {normalized.length > max ? (
+        <div className="text-[color:var(--muted)]">+ {normalized.length - max} itens</div>
+      ) : null}
+    </div>
+  );
+}
+
+function OrderCard({ p }: { p: PedidoRow }) {
+  const status = normalizeStatus(p.status);
+  const tone =
+    status === "entregue" ? "ok" : status === "pronto" ? "warn" : status === "preparando" ? "danger" : "neutral";
+
+  return (
+    <div className="wavie-card-soft p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-semibold text-[color:var(--text)]">
+              Pedido #{p.id.slice(0, 6).toUpperCase()}
+            </div>
+            <Pill tone={tone}>{status}</Pill>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
+            <span>
+              Local: <span className="text-[color:var(--text-2)]">{p.local ?? "—"}</span>
+            </span>
+            <span>
+              Criado:{" "}
+              <span className="text-[color:var(--text-2)]">
+                {new Date(p.created_at).toLocaleString("pt-BR")}
+              </span>
+            </span>
+          </div>
+
+          <OrderItemsPreview items={p.items ?? null} />
+        </div>
+
+        <div className="shrink-0 text-right">
+          <div className="text-sm font-semibold text-[color:var(--text)]">
+            {formatMoneyBRL(p.total)}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function OrdersList({ pedidos }: { pedidos: PedidoRow[] }) {
+function KanbanColumn({
+  title,
+  subtitle,
+  pedidos,
+  empty,
+}: {
+  title: string;
+  subtitle?: string;
+  pedidos: PedidoRow[];
+  empty?: string;
+}) {
   return (
-    <div className="wavie-card p-6">
-      <div className="flex items-center justify-between gap-3">
+    <div className="wavie-card p-4">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">Pedidos</div>
-          <div className="mt-1 text-sm text-[color:var(--text-2)]">
-            Últimos pedidos (TEST).
-          </div>
+          <div className="text-sm font-semibold text-[color:var(--text)]">{title}</div>
+          {subtitle ? (
+            <div className="mt-1 text-xs text-[color:var(--muted)]">{subtitle}</div>
+          ) : null}
         </div>
-        <span className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface-2)] px-3 py-1 text-xs text-[color:var(--text-2)]">
-          {pedidos.length}
-        </span>
+        <Pill>{pedidos.length}</Pill>
       </div>
 
       <div className="mt-4 space-y-3">
-        {pedidos.map((p) => (
-          <div key={p.id} className="wavie-card-soft p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="text-sm font-semibold text-[color:var(--text)]">
-                  Pedido #{p.id.slice(0, 6).toUpperCase()}
-                </div>
-                <StatusPill status={p.status} />
-              </div>
-
-              <div className="text-sm text-[color:var(--text)]">
-                {formatMoneyBRL(p.total)}
-              </div>
-            </div>
-
-            <div className="mt-2 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
-              <span>
-                Local:{" "}
-                <span className="text-[color:var(--text-2)]">
-                  {p.local ?? "—"}
-                </span>
-              </span>
-              <span>
-                Criado:{" "}
-                <span className="text-[color:var(--text-2)]">
-                  {new Date(p.created_at).toLocaleString("pt-BR")}
-                </span>
-              </span>
-            </div>
+        {pedidos.length === 0 ? (
+          <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
+            {empty ?? "Sem pedidos aqui ainda."}
           </div>
-        ))}
+        ) : (
+          pedidos.map((p) => <OrderCard key={p.id} p={p} />)
+        )}
       </div>
     </div>
   );
 }
 
-function extractBarracaIdFromPath(pathname: string | null): string | null {
-  if (!pathname) return null;
+function parseBarracaIdFromLocation(): string | null {
+  if (typeof window === "undefined") return null;
 
-  // Aceita:
-  // /app/barraca/<uuid>
-  // /app/barraca/<qualquer-string>
-  const m1 = pathname.match(/^\/app\/barraca\/([^\/\?#]+)$/i);
-  if (m1?.[1]) return decodeURIComponent(m1[1]);
+  const url = new URL(window.location.href);
 
-  // fallback antigo (se você acessar /app/<uuid>)
-  const m2 = pathname.match(/^\/app\/([^\/\?#]+)$/i);
-  if (m2?.[1] && m2[1] !== "billing") return decodeURIComponent(m2[1]);
+  // 1) query: ?barraca_id=<uuid>
+  const q = url.searchParams.get("barraca_id");
+  if (q && q.length >= 8) return q;
+
+  // 2) paths: /app/barraca/<uuid> OR /app/<uuid>
+  const parts = url.pathname.split("/").filter(Boolean);
+
+  // ex: ["app","barraca","<uuid>"]
+  const idxBarraca = parts.indexOf("barraca");
+  if (idxBarraca >= 0 && parts[idxBarraca + 1]) return parts[idxBarraca + 1];
+
+  // ex: ["app","<uuid>"]
+  const idxApp = parts.indexOf("app");
+  if (idxApp >= 0 && parts[idxApp + 1]) return parts[idxApp + 1];
 
   return null;
 }
@@ -148,16 +247,24 @@ export default function AppHomeClient({
 }: {
   barracaId: string | null;
 }) {
-  const pathname = usePathname();
-
-  // ✅ Fonte de verdade (robusta): prop OU URL
-  const effectiveBarracaId = useMemo(() => {
-    return barracaId ?? extractBarracaIdFromPath(pathname);
-  }, [barracaId, pathname]);
-
+  const [effectiveBarracaId, setEffectiveBarracaId] = useState<string | null>(barracaId ?? null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
+
+  // Resolve barracaId automaticamente pela URL (sem hooks do Next)
+  useEffect(() => {
+    const id = parseBarracaIdFromLocation();
+    if (id) setEffectiveBarracaId(id);
+
+    const onPop = () => {
+      const next = parseBarracaIdFromLocation();
+      setEffectiveBarracaId(next);
+    };
+
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   const pedidosHoje = useMemo(() => {
     const now = new Date();
@@ -189,10 +296,37 @@ export default function AppHomeClient({
   }, [faturamentoHoje, pedidosHoje]);
 
   const emPreparo = useMemo(() => {
-    return pedidos.filter((p) => (p.status ?? "").toLowerCase() === "preparando")
-      .length;
+    return pedidos.filter((p) => normalizeStatus(p.status) === "preparando").length;
   }, [pedidos]);
 
+  // Agrupar para o mini-kanban
+  const grouped = useMemo(() => {
+    const rec: PedidoRow[] = [];
+    const prep: PedidoRow[] = [];
+    const pronto: PedidoRow[] = [];
+    const ent: PedidoRow[] = [];
+
+    for (const p of pedidos) {
+      const s = normalizeStatus(p.status);
+      if (s === "preparando") prep.push(p);
+      else if (s === "pronto") pronto.push(p);
+      else if (s === "entregue") ent.push(p);
+      else rec.push(p);
+    }
+
+    // mais recentes primeiro
+    const sortByNew = (a: PedidoRow, b: PedidoRow) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+
+    return {
+      recebido: rec.sort(sortByNew),
+      preparando: prep.sort(sortByNew),
+      pronto: pronto.sort(sortByNew),
+      entregue: ent.sort(sortByNew),
+    };
+  }, [pedidos]);
+
+  // Carregar pedidos
   useEffect(() => {
     let cancelled = false;
 
@@ -208,14 +342,11 @@ export default function AppHomeClient({
 
       try {
         const res = await fetch(
-          `/api/app/pedidos?barraca_id=${encodeURIComponent(
-            effectiveBarracaId
-          )}&limit=20`,
+          `/api/app/pedidos?barraca_id=${encodeURIComponent(effectiveBarracaId)}&limit=50`,
           { cache: "no-store" }
         );
 
         const json = await res.json();
-
         if (cancelled) return;
 
         if (!res.ok) {
@@ -234,41 +365,26 @@ export default function AppHomeClient({
     }
 
     load();
+    const t = window.setInterval(load, 5000); // atualização a cada 5s (sensação de “tempo real”)
     return () => {
       cancelled = true;
+      window.clearInterval(t);
     };
   }, [effectiveBarracaId]);
 
   return (
     <div className="space-y-6">
-      {/* Debug mínimo (vamos remover depois) */}
-      <div className="text-xs text-[color:var(--muted)]">
-        barracaId(prop):{" "}
-        <span className="text-[color:var(--text-2)]">
-          {barracaId ?? "null"}
-        </span>{" "}
-        • barracaId(url):{" "}
-        <span className="text-[color:var(--text-2)]">
-          {extractBarracaIdFromPath(pathname) ?? "null"}
-        </span>{" "}
-        • efetivo:{" "}
-        <span className="text-[color:var(--text)]">
-          {effectiveBarracaId ?? "null"}
-        </span>
-      </div>
-
       <div>
-        <div className="text-xl font-semibold tracking-tight">Visão geral</div>
+        <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">
+          Visão geral
+        </div>
         <div className="mt-1 text-sm text-[color:var(--text-2)]">
           Operação e indicadores do dia (ambiente TEST).
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Pedidos hoje"
-          value={effectiveBarracaId ? String(pedidosHoje) : "—"}
-        />
+        <StatCard label="Pedidos hoje" value={effectiveBarracaId ? String(pedidosHoje) : "—"} />
         <StatCard
           label="Faturamento hoje"
           value={effectiveBarracaId ? formatMoneyBRL(faturamentoHoje) : "—"}
@@ -277,41 +393,31 @@ export default function AppHomeClient({
           label="Ticket médio"
           value={effectiveBarracaId ? formatMoneyBRL(ticketMedioHoje ?? null) : "—"}
         />
-        <StatCard
-          label="Em preparo"
-          value={effectiveBarracaId ? String(emPreparo) : "—"}
-        />
+        <StatCard label="Em preparo" value={effectiveBarracaId ? String(emPreparo) : "—"} />
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <a
-          href="/app/billing"
-          className="wavie-card px-4 py-3 text-sm hover:bg-[color:var(--surface-2)]"
-        >
-          Ver cobrança
-        </a>
-
-        <a
-          href="/b/nelsaodrinks"
-          className="wavie-card px-4 py-3 text-sm hover:bg-[color:var(--surface-2)]"
-        >
-          Abrir cardápio (nelsaodrinks)
-        </a>
-
-        {/* botão direto para o exemplo, pra não ficar “sem ação” */}
-        <a
-          href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95"
-          className="wavie-card px-4 py-3 text-sm hover:bg-[color:var(--surface-2)]"
-        >
+        <ButtonLink href="/app/billing">Ver cobrança</ButtonLink>
+        <ButtonLink href="/b/nelsaodrinks">Abrir cardápio (nelsaodrinks)</ButtonLink>
+        <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">
           Conectar barraca (exemplo)
-        </a>
+        </ButtonLink>
       </div>
 
       {!effectiveBarracaId ? (
         <div className="wavie-card p-6">
-          <div className="text-sm font-semibold">Conectar barraca</div>
+          <div className="text-sm font-semibold text-[color:var(--text)]">Conectar barraca</div>
+          <div className="mt-2 text-sm text-[color:var(--text-2)]">
+            Para carregar pedidos, abra:
+          </div>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">
+              Abrir barraca (exemplo)
+            </ButtonLink>
+            <ButtonLink href="/b/nelsaodrinks">Abrir cardápio (nelsaodrinks)</ButtonLink>
+          </div>
           <div className="mt-3 text-xs text-[color:var(--muted)]">
-            Abra /app/barraca/{"<barraca_id>"} para carregar pedidos.
+            Depois o login vai definir automaticamente a barraca do cliente.
           </div>
         </div>
       ) : loading ? (
@@ -325,11 +431,44 @@ export default function AppHomeClient({
           </div>
           <div className="mt-2 text-sm text-[color:var(--text-2)]">{errorMsg}</div>
         </div>
-      ) : pedidos.length === 0 ? (
-        <EmptyOrders />
       ) : (
-        <OrdersList pedidos={pedidos} />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+          <KanbanColumn
+            title="Recebido"
+            subtitle="Novos pedidos"
+            pedidos={grouped.recebido}
+            empty="Sem pedidos recebidos no momento."
+          />
+          <KanbanColumn
+            title="Preparando"
+            subtitle="Em produção"
+            pedidos={grouped.preparando}
+            empty="Nada em preparo agora."
+          />
+          <KanbanColumn
+            title="Pronto"
+            subtitle="Entregar agora"
+            pedidos={grouped.pronto}
+            empty="Nada pronto para entrega."
+          />
+          <KanbanColumn
+            title="Entregue"
+            subtitle="Últimos pedidos"
+            pedidos={grouped.entregue}
+            empty="Sem entregues ainda."
+          />
+        </div>
       )}
+
+      <div className="wavie-card p-5">
+        <div className="text-sm font-semibold text-[color:var(--text)]">Painel operacional</div>
+        <div className="mt-1 text-sm text-[color:var(--text-2)]">
+          Itens sempre visíveis, status claro e leitura rápida em celular/tablet.
+        </div>
+        <div className="mt-3 text-xs text-[color:var(--muted)]">
+          Atualiza automaticamente a cada 5s para sensação de tempo real.
+        </div>
+      </div>
     </div>
   );
 }
