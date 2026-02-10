@@ -22,11 +22,9 @@ function resolveBarracaId(): string | null {
 
   const parts = url.pathname.split("/").filter(Boolean);
 
-  // /app/barraca/<id>
   const idxBarraca = parts.indexOf("barraca");
   if (idxBarraca >= 0 && parts[idxBarraca + 1]) return parts[idxBarraca + 1];
 
-  // /app/<id>
   const idxApp = parts.indexOf("app");
   if (idxApp >= 0 && parts[idxApp + 1]) return parts[idxApp + 1];
 
@@ -48,32 +46,89 @@ const NEXT: Record<string, string | null> = {
   entregue: null,
 };
 
-function Pill({ children }: { children: React.ReactNode }) {
+type Tone = "recebido" | "preparando" | "pronto" | "entregue";
+
+function toneClasses(tone: Tone) {
+  // “Acento” discreto, mas bem visível
+  if (tone === "recebido") {
+    return {
+      col: "ring-1 ring-white/6",
+      card: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_40px_rgba(59,130,246,0.08)]",
+      edge: "before:bg-sky-400/60",
+      pill: "border-sky-400/20 bg-sky-400/10 text-sky-200",
+      btn: "border-sky-400/25 bg-sky-400/15 hover:bg-sky-400/20",
+      chip: "border-sky-400/20 bg-sky-400/10 text-sky-100",
+      title: "text-sky-200",
+    };
+  }
+  if (tone === "preparando") {
+    return {
+      col: "ring-1 ring-white/6",
+      card: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_40px_rgba(245,158,11,0.08)]",
+      edge: "before:bg-amber-400/60",
+      pill: "border-amber-400/20 bg-amber-400/10 text-amber-200",
+      btn: "border-amber-400/25 bg-amber-400/15 hover:bg-amber-400/20",
+      chip: "border-amber-400/20 bg-amber-400/10 text-amber-100",
+      title: "text-amber-200",
+    };
+  }
+  if (tone === "pronto") {
+    return {
+      col: "ring-1 ring-white/6",
+      card: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_40px_rgba(34,197,94,0.10)]",
+      edge: "before:bg-emerald-400/70",
+      pill: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
+      btn: "border-emerald-400/30 bg-emerald-400/18 hover:bg-emerald-400/24",
+      chip: "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
+      title: "text-emerald-200",
+    };
+  }
+  // entregue
+  return {
+    col: "ring-1 ring-white/6",
+    card: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)]",
+    edge: "before:bg-white/20",
+    pill: "border-white/10 bg-white/5 text-white/70",
+    btn: "border-white/10 bg-white/6 hover:bg-white/10",
+    chip: "border-white/10 bg-white/8 text-white/70",
+    title: "text-white/85",
+  };
+}
+
+function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  const t = toneClasses(tone);
   return (
-    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/80">
+    <span
+      className={[
+        "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium",
+        t.pill,
+      ].join(" ")}
+    >
       {children}
     </span>
   );
 }
 
 function ActionButton({
+  tone,
   label,
   onClick,
   disabled,
 }: {
+  tone: Tone;
   label: string;
   onClick: () => void;
   disabled?: boolean;
 }) {
+  const t = toneClasses(tone);
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       className={[
         "mt-3 inline-flex w-full items-center justify-center rounded-xl border px-3 py-2 text-xs font-semibold",
-        "border-white/10 bg-white/6 text-white/90",
-        "hover:bg-white/10 hover:border-white/20 active:scale-[0.99]",
-        "focus:outline-none focus:ring-2 focus:ring-white/10",
+        "text-white/90 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-white/10",
+        t.btn,
         "disabled:cursor-not-allowed disabled:opacity-50",
       ].join(" ")}
     >
@@ -82,15 +137,21 @@ function ActionButton({
   );
 }
 
-function QtyChip({ n }: { n: number }) {
+function QtyChip({ tone, n }: { tone: Tone; n: number }) {
+  const t = toneClasses(tone);
   return (
-    <span className="inline-flex items-center rounded-md border border-white/10 bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold text-white/70">
+    <span
+      className={[
+        "inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold",
+        t.chip,
+      ].join(" ")}
+    >
       {n}x
     </span>
   );
 }
 
-function OrderItems({ items }: { items?: PedidoItem[] }) {
+function OrderItems({ tone, items }: { tone: Tone; items?: PedidoItem[] }) {
   if (!items || items.length === 0) {
     return <div className="mt-3 text-xs text-white/40">Itens: —</div>;
   }
@@ -102,7 +163,7 @@ function OrderItems({ items }: { items?: PedidoItem[] }) {
     <div className="mt-3 space-y-1.5 text-xs">
       {head.map((item, i) => (
         <div key={i} className="flex items-start gap-2">
-          <QtyChip n={item.quantity} />
+          <QtyChip tone={tone} n={item.quantity} />
           <div className="min-w-0 truncate text-white/90">{item.name}</div>
         </div>
       ))}
@@ -119,11 +180,13 @@ function OrderCard({
   busy,
 }: {
   p: PedidoRow;
-  onAdvance: (id: string, current: string) => void;
+  onAdvance: (id: string, current: Tone) => void;
   busy: boolean;
 }) {
-  const status = normalizeStatus(p.status);
+  const status = normalizeStatus(p.status) as Tone;
   const next = NEXT[status];
+
+  const t = toneClasses(status);
 
   const buttonLabel =
     status === "recebido"
@@ -135,7 +198,14 @@ function OrderCard({
       : "";
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-white/8 to-white/4 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+    <div
+      className={[
+        "relative rounded-2xl border border-white/10 bg-gradient-to-b from-white/8 to-white/4 p-4",
+        t.card,
+        "before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full",
+        t.edge,
+      ].join(" ")}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold tracking-tight text-white">
@@ -146,13 +216,14 @@ function OrderCard({
             <span className="text-white/60">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
           </div>
         </div>
-        <Pill>{status}</Pill>
+        <Pill tone={status}>{status}</Pill>
       </div>
 
-      <OrderItems items={p.items} />
+      <OrderItems tone={status} items={p.items} />
 
       {next ? (
         <ActionButton
+          tone={status}
           label={buttonLabel}
           onClick={() => onAdvance(p.id, status)}
           disabled={busy}
@@ -197,7 +268,6 @@ export default function AppHomeClient() {
     const json = await res.json();
     const next = (json?.data ?? []) as PedidoRow[];
 
-    // evita re-render desnecessário
     const hash = JSON.stringify(next);
     if (hash !== lastHash.current) {
       lastHash.current = hash;
@@ -217,7 +287,7 @@ export default function AppHomeClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [barracaId]);
 
-  async function advanceStatus(id: string, current: string) {
+  async function advanceStatus(id: string, current: Tone) {
     const next = NEXT[current];
     if (!next) return;
 
@@ -237,7 +307,9 @@ export default function AppHomeClient() {
 
       if (!res.ok) {
         // rollback
-        setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
+        setPedidos((prev) =>
+          prev.map((p) => (p.id === id ? { ...p, status: current } : p))
+        );
         alert(json?.error ?? "Erro ao atualizar status");
       } else {
         const updated = json?.data as PedidoRow;
@@ -248,7 +320,9 @@ export default function AppHomeClient() {
         }
       }
     } catch (e: any) {
-      setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
+      setPedidos((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, status: current } : p))
+      );
       alert(e?.message ?? "Erro de rede");
     } finally {
       setBusyId(null);
@@ -269,7 +343,6 @@ export default function AppHomeClient() {
       else rec.push(p);
     }
 
-    // novo em cima sempre
     const sortByNew = (a: PedidoRow, b: PedidoRow) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
@@ -289,38 +362,41 @@ export default function AppHomeClient() {
     );
   }
 
-  const Column = ({ title, items }: { title: string; items: PedidoRow[] }) => (
-    <div className="wavie-card p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-sm font-semibold text-[color:var(--text)]">{title}</div>
-        <Pill>{items.length}</Pill>
-      </div>
+  const Column = ({ tone, title, items }: { tone: Tone; title: string; items: PedidoRow[] }) => {
+    const t = toneClasses(tone);
+    return (
+      <div className={["wavie-card p-4", t.col].join(" ")}>
+        <div className="mb-3 flex items-center justify-between">
+          <div className={["text-sm font-semibold", t.title].join(" ")}>{title}</div>
+          <Pill tone={tone}>{items.length}</Pill>
+        </div>
 
-      <div className="space-y-3">
-        {items.length === 0 ? (
-          <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
-            Sem pedidos aqui ainda.
-          </div>
-        ) : (
-          items.map((p) => (
-            <OrderCard
-              key={p.id}
-              p={p}
-              onAdvance={advanceStatus}
-              busy={busyId === p.id}
-            />
-          ))
-        )}
+        <div className="space-y-3">
+          {items.length === 0 ? (
+            <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
+              Sem pedidos aqui ainda.
+            </div>
+          ) : (
+            items.map((p) => (
+              <OrderCard
+                key={p.id}
+                p={p}
+                onAdvance={advanceStatus}
+                busy={busyId === p.id}
+              />
+            ))
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
-      <Column title="Recebido" items={grouped.recebido} />
-      <Column title="Preparando" items={grouped.preparando} />
-      <Column title="Pronto" items={grouped.pronto} />
-      <Column title="Entregue" items={grouped.entregue} />
+      <Column tone="recebido" title="Recebido" items={grouped.recebido} />
+      <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+      <Column tone="pronto" title="Pronto" items={grouped.pronto} />
+      <Column tone="entregue" title="Entregue" items={grouped.entregue} />
     </div>
   );
 }
