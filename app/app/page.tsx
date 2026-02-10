@@ -12,13 +12,9 @@ function StatCard({
     return (
       <div className="wavie-card p-4">
         <div className="text-xs text-[color:var(--text-2)]">{label}</div>
-        <div className="mt-2 text-2xl font-semibold tracking-tight">
-          {value}
-        </div>
+        <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
         {hint ? (
-          <div className="mt-1 text-xs text-[color:var(--muted)]">
-            {hint}
-          </div>
+          <div className="mt-1 text-xs text-[color:var(--muted)]">{hint}</div>
         ) : null}
       </div>
     );
@@ -33,16 +29,16 @@ function StatCard({
         </div>
   
         <div className="mt-4 wavie-card-soft p-4 text-sm text-[color:var(--text-2)]">
-          Quando um pedido entrar, ele aparecerá aqui com
-          <strong className="ml-1 text-[color:var(--text)]">
+          Este painel é{" "}
+          <strong className="text-[color:var(--text)]">operacional</strong>. Quando
+          um pedido entrar, ele aparecerá aqui em tempo real, com{" "}
+          <strong className="text-[color:var(--text)]">
             itens sempre visíveis
           </strong>
-          , status claro e ações rápidas
-          <span className="text-[color:var(--muted)]">
-            {" "}
-            (mobile / tablet first)
-          </span>
-          .
+          , status claro e ações rápidas.
+          <div className="mt-2 text-xs text-[color:var(--muted)]">
+            Otimizado para uso contínuo em celular e tablet.
+          </div>
         </div>
       </div>
     );
@@ -53,9 +49,7 @@ function StatCard({
       <div className="space-y-6">
         {/* Header */}
         <div>
-          <div className="text-xl font-semibold tracking-tight">
-            Visão geral
-          </div>
+          <div className="text-xl font-semibold tracking-tight">Visão geral</div>
           <div className="mt-1 text-sm text-[color:var(--text-2)]">
             Operação e indicadores do dia (ambiente TEST).
           </div>
