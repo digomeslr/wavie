@@ -13,6 +13,8 @@ type PedidoRow = {
   items?: PedidoItem[];
 };
 
+type Tone = "recebido" | "preparando" | "pronto" | "entregue";
+
 function resolveBarracaId(): string | null {
   if (typeof window === "undefined") return null;
 
@@ -31,7 +33,7 @@ function resolveBarracaId(): string | null {
   return null;
 }
 
-function normalizeStatus(s: string | null | undefined) {
+function normalizeStatus(s: string | null | undefined): Tone {
   const x = (s ?? "").toLowerCase().trim();
   if (x === "preparando") return "preparando";
   if (x === "pronto") return "pronto";
@@ -39,71 +41,68 @@ function normalizeStatus(s: string | null | undefined) {
   return "recebido";
 }
 
-const NEXT: Record<string, string | null> = {
+const NEXT: Record<Tone, Tone | null> = {
   recebido: "preparando",
   preparando: "pronto",
   pronto: "entregue",
   entregue: null,
 };
 
-type Tone = "recebido" | "preparando" | "pronto" | "entregue";
-
 function toneClasses(tone: Tone) {
-  // “Acento” discreto, mas bem visível
+  // “vida” + contraste: gradiente leve, glow e UI mais chamativa
   if (tone === "recebido") {
     return {
-      col: "ring-1 ring-white/6",
-      card: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_40px_rgba(59,130,246,0.08)]",
-      edge: "before:bg-sky-400/60",
-      pill: "border-sky-400/20 bg-sky-400/10 text-sky-200",
-      btn: "border-sky-400/25 bg-sky-400/15 hover:bg-sky-400/20",
-      chip: "border-sky-400/20 bg-sky-400/10 text-sky-100",
-      title: "text-sky-200",
+      colTitle: "text-sky-200",
+      colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_60px_rgba(56,189,248,0.10)]",
+      edge: "before:bg-sky-400/70",
+      pill: "border-sky-400/25 bg-sky-400/12 text-sky-200",
+      chip: "border-sky-400/25 bg-sky-400/12 text-sky-100",
+      local: "border-sky-400/25 bg-sky-400/12 text-sky-100",
+      btn: "border-sky-400/30 bg-sky-400/18 hover:bg-sky-400/24 hover:border-sky-400/40",
+      cardBg: "from-sky-500/10 to-white/4",
     };
   }
   if (tone === "preparando") {
     return {
-      col: "ring-1 ring-white/6",
-      card: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_40px_rgba(245,158,11,0.08)]",
-      edge: "before:bg-amber-400/60",
-      pill: "border-amber-400/20 bg-amber-400/10 text-amber-200",
-      btn: "border-amber-400/25 bg-amber-400/15 hover:bg-amber-400/20",
-      chip: "border-amber-400/20 bg-amber-400/10 text-amber-100",
-      title: "text-amber-200",
+      colTitle: "text-amber-200",
+      colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_60px_rgba(245,158,11,0.10)]",
+      edge: "before:bg-amber-400/70",
+      pill: "border-amber-400/25 bg-amber-400/12 text-amber-200",
+      chip: "border-amber-400/25 bg-amber-400/12 text-amber-100",
+      local: "border-amber-400/25 bg-amber-400/12 text-amber-100",
+      btn: "border-amber-400/30 bg-amber-400/18 hover:bg-amber-400/24 hover:border-amber-400/40",
+      cardBg: "from-amber-500/10 to-white/4",
     };
   }
   if (tone === "pronto") {
     return {
-      col: "ring-1 ring-white/6",
-      card: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_40px_rgba(34,197,94,0.10)]",
-      edge: "before:bg-emerald-400/70",
-      pill: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
-      btn: "border-emerald-400/30 bg-emerald-400/18 hover:bg-emerald-400/24",
-      chip: "border-emerald-400/20 bg-emerald-400/10 text-emerald-100",
-      title: "text-emerald-200",
+      colTitle: "text-emerald-200",
+      colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_70px_rgba(34,197,94,0.12)]",
+      edge: "before:bg-emerald-400/80",
+      pill: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200",
+      chip: "border-emerald-400/25 bg-emerald-400/12 text-emerald-100",
+      local: "border-emerald-400/25 bg-emerald-400/12 text-emerald-100",
+      btn: "border-emerald-400/35 bg-emerald-400/20 hover:bg-emerald-400/26 hover:border-emerald-400/45",
+      cardBg: "from-emerald-500/12 to-white/4",
     };
   }
   // entregue
   return {
-    col: "ring-1 ring-white/6",
-    card: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)]",
+    colTitle: "text-white/85",
+    colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)]",
     edge: "before:bg-white/20",
-    pill: "border-white/10 bg-white/5 text-white/70",
-    btn: "border-white/10 bg-white/6 hover:bg-white/10",
+    pill: "border-white/10 bg-white/6 text-white/70",
     chip: "border-white/10 bg-white/8 text-white/70",
-    title: "text-white/85",
+    local: "border-white/10 bg-white/8 text-white/70",
+    btn: "border-white/10 bg-white/6 hover:bg-white/10 hover:border-white/20",
+    cardBg: "from-white/8 to-white/4",
   };
 }
 
 function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   const t = toneClasses(tone);
   return (
-    <span
-      className={[
-        "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium",
-        t.pill,
-      ].join(" ")}
-    >
+    <span className={["inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium", t.pill].join(" ")}>
       {children}
     </span>
   );
@@ -127,7 +126,8 @@ function ActionButton({
       disabled={disabled}
       className={[
         "mt-3 inline-flex w-full items-center justify-center rounded-xl border px-3 py-2 text-xs font-semibold",
-        "text-white/90 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-white/10",
+        "text-white/95 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-white/10",
+        "shadow-[0_10px_30px_rgba(0,0,0,0.25)]",
         t.btn,
         "disabled:cursor-not-allowed disabled:opacity-50",
       ].join(" ")}
@@ -140,14 +140,29 @@ function ActionButton({
 function QtyChip({ tone, n }: { tone: Tone; n: number }) {
   const t = toneClasses(tone);
   return (
-    <span
-      className={[
-        "inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold",
-        t.chip,
-      ].join(" ")}
-    >
+    <span className={["inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold", t.chip].join(" ")}>
       {n}x
     </span>
+  );
+}
+
+function LocalBadge({ tone, local }: { tone: Tone; local: string | null }) {
+  const t = toneClasses(tone);
+  const text = local?.trim() ? local.trim() : "—";
+
+  return (
+    <div
+      className={[
+        "inline-flex items-center gap-2 rounded-xl border px-2.5 py-1.5",
+        "text-[12px] font-semibold tracking-tight",
+        t.local,
+      ].join(" ")}
+      title="Local de entrega"
+    >
+      <span className="text-white/80">📍</span>
+      <span className="text-white/90">Local:</span>
+      <span className="text-white">{text}</span>
+    </div>
   );
 }
 
@@ -156,7 +171,7 @@ function OrderItems({ tone, items }: { tone: Tone; items?: PedidoItem[] }) {
     return <div className="mt-3 text-xs text-white/40">Itens: —</div>;
   }
 
-  const max = 5;
+  const max = 6;
   const head = items.slice(0, max);
 
   return (
@@ -178,14 +193,15 @@ function OrderCard({
   p,
   onAdvance,
   busy,
+  isNew,
 }: {
   p: PedidoRow;
   onAdvance: (id: string, current: Tone) => void;
   busy: boolean;
+  isNew: boolean;
 }) {
-  const status = normalizeStatus(p.status) as Tone;
+  const status = normalizeStatus(p.status);
   const next = NEXT[status];
-
   const t = toneClasses(status);
 
   const buttonLabel =
@@ -200,10 +216,12 @@ function OrderCard({
   return (
     <div
       className={[
-        "relative rounded-2xl border border-white/10 bg-gradient-to-b from-white/8 to-white/4 p-4",
-        t.card,
+        "relative rounded-2xl border border-white/10 bg-gradient-to-b p-4",
+        t.cardBg,
+        t.colGlow,
         "before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full",
         t.edge,
+        isNew ? "ring-2 ring-sky-300/25 animate-[pulse_1.2s_ease-in-out_3]" : "",
       ].join(" ")}
     >
       <div className="flex items-start justify-between gap-3">
@@ -212,11 +230,15 @@ function OrderCard({
             Pedido <span className="text-white/70">#{p.id.slice(0, 6).toUpperCase()}</span>
           </div>
           <div className="mt-1 text-[11px] text-white/45">
-            Local <span className="text-white/70">{p.local ?? "—"}</span> •{" "}
             <span className="text-white/60">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
           </div>
         </div>
         <Pill tone={status}>{status}</Pill>
+      </div>
+
+      {/* LOCAL em destaque */}
+      <div className="mt-3">
+        <LocalBadge tone={status} local={p.local} />
       </div>
 
       <OrderItems tone={status} items={p.items} />
@@ -238,8 +260,10 @@ export default function AppHomeClient() {
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const lastHash = useRef("");
   const stopPollingRef = useRef(false);
+  const lastHash = useRef("");
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  const [newIds, setNewIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setBarracaId(resolveBarracaId());
@@ -258,6 +282,35 @@ export default function AppHomeClient() {
     };
   }, []);
 
+  function markNew(arr: PedidoRow[]) {
+    const seen = seenIdsRef.current;
+    const newly = new Set<string>();
+
+    for (const p of arr) {
+      if (!seen.has(p.id)) newly.add(p.id);
+    }
+
+    // atualiza o seen
+    for (const p of arr) seen.add(p.id);
+
+    if (newly.size > 0) {
+      setNewIds((prev) => {
+        const merged = new Set(prev);
+        for (const id of newly) merged.add(id);
+        return merged;
+      });
+
+      // remove destaque depois de 12s (sem som)
+      window.setTimeout(() => {
+        setNewIds((prev) => {
+          const next = new Set(prev);
+          for (const id of newly) next.delete(id);
+          return next;
+        });
+      }, 12000);
+    }
+  }
+
   async function load() {
     if (!barracaId) return;
 
@@ -268,6 +321,10 @@ export default function AppHomeClient() {
     const json = await res.json();
     const next = (json?.data ?? []) as PedidoRow[];
 
+    // marca pedidos novos (antes do hash, pois hash pode mudar pouco)
+    markNew(next);
+
+    // evita re-render desnecessário
     const hash = JSON.stringify(next);
     if (hash !== lastHash.current) {
       lastHash.current = hash;
@@ -307,22 +364,16 @@ export default function AppHomeClient() {
 
       if (!res.ok) {
         // rollback
-        setPedidos((prev) =>
-          prev.map((p) => (p.id === id ? { ...p, status: current } : p))
-        );
+        setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
         alert(json?.error ?? "Erro ao atualizar status");
       } else {
         const updated = json?.data as PedidoRow;
         if (updated?.id) {
-          setPedidos((prev) =>
-            prev.map((p) => (p.id === id ? { ...p, status: updated.status } : p))
-          );
+          setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: updated.status } : p)));
         }
       }
     } catch (e: any) {
-      setPedidos((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: current } : p))
-      );
+      setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
       alert(e?.message ?? "Erro de rede");
     } finally {
       setBusyId(null);
@@ -365,9 +416,9 @@ export default function AppHomeClient() {
   const Column = ({ tone, title, items }: { tone: Tone; title: string; items: PedidoRow[] }) => {
     const t = toneClasses(tone);
     return (
-      <div className={["wavie-card p-4", t.col].join(" ")}>
+      <div className={["wavie-card p-4", t.colGlow].join(" ")}>
         <div className="mb-3 flex items-center justify-between">
-          <div className={["text-sm font-semibold", t.title].join(" ")}>{title}</div>
+          <div className={["text-sm font-semibold", t.colTitle].join(" ")}>{title}</div>
           <Pill tone={tone}>{items.length}</Pill>
         </div>
 
@@ -383,6 +434,7 @@ export default function AppHomeClient() {
                 p={p}
                 onAdvance={advanceStatus}
                 busy={busyId === p.id}
+                isNew={newIds.has(p.id)}
               />
             ))
           )}
