@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const FLOW: Record<string, string> = {
@@ -8,12 +8,13 @@ const FLOW: Record<string, string> = {
 };
 
 export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } }
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = supabaseAdmin();
-    const id = params?.id;
+
+    const { id } = await context.params;
 
     if (!id) {
       return NextResponse.json({ error: "id obrigatório" }, { status: 400 });
@@ -26,22 +27,25 @@ export async function PATCH(
       return NextResponse.json({ error: "next_status obrigatório" }, { status: 400 });
     }
 
-    // pega status atual
+    // status atual
     const { data: pedido, error: selErr } = await supabase
       .from("pedidos")
-      .select("id,status,barraca_id,local,created_at")
+      .select("id,status")
       .eq("id", id)
       .single();
 
     if (selErr || !pedido) {
-      return NextResponse.json({ error: selErr?.message ?? "pedido não encontrado" }, { status: 404 });
+      return NextResponse.json(
+        { error: selErr?.message ?? "pedido não encontrado" },
+        { status: 404 }
+      );
     }
 
     const current = String(pedido.status ?? "").toLowerCase().trim() || "recebido";
     const allowedNext = FLOW[current];
 
     if (!allowedNext) {
-      return NextResponse.json({ error: "status_atual_inválido" }, { status: 400 });
+      return NextResponse.json({ error: "status_atual_invalido" }, { status: 400 });
     }
 
     if (next !== allowedNext) {
@@ -51,7 +55,6 @@ export async function PATCH(
       );
     }
 
-    // atualiza
     const { data: updated, error: updErr } = await supabase
       .from("pedidos")
       .update({ status: next })
