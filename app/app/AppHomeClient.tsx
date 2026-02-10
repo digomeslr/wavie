@@ -27,15 +27,6 @@ function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
-function formatMoneyBRL(v: number | null | undefined) {
-  if (v == null) return "—";
-  try {
-    return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-  } catch {
-    return `R$ ${v}`;
-  }
-}
-
 function normalizeStatus(s: string | null | undefined) {
   const x = (s ?? "").toLowerCase().trim();
   if (x === "recebido") return "recebido";
@@ -45,29 +36,13 @@ function normalizeStatus(s: string | null | undefined) {
   return "recebido";
 }
 
-function StatCard({
-  label,
-  value,
-  hint,
+function Pill({
+  children,
+  tone = "neutral",
 }: {
-  label: string;
-  value: string;
-  hint?: string;
+  children: React.ReactNode;
+  tone?: "neutral" | "ok" | "warn" | "danger";
 }) {
-  return (
-    <div className="wavie-card p-4">
-      <div className="text-xs text-[color:var(--text-2)]">{label}</div>
-      <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">
-        {value}
-      </div>
-      {hint ? (
-        <div className="mt-1 text-xs text-[color:var(--muted)]">{hint}</div>
-      ) : null}
-    </div>
-  );
-}
-
-function Pill({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "ok" | "warn" | "danger" }) {
   const toneClass =
     tone === "ok"
       ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
@@ -84,18 +59,9 @@ function Pill({ children, tone = "neutral" }: { children: React.ReactNode; tone?
   );
 }
 
-function ButtonLink({
-  href,
-  children,
-}: {
-  href: string;
-  children: React.ReactNode;
-}) {
+function ButtonLink({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <a
-      href={href}
-      className="wavie-btn"
-    >
+    <a href={href} className="wavie-btn">
       {children}
     </a>
   );
@@ -106,9 +72,7 @@ function OrderItemsPreview({ items }: { items?: PedidoItem[] | null }) {
     .map((it) => {
       const name = it.name ?? it.title ?? it.produto ?? "Item";
       const qty = it.quantity ?? it.qty ?? 1;
-      const unit = it.unit_price ?? it.price ?? null;
-      const total = it.total ?? (unit != null ? Number(unit) * Number(qty) : null);
-      return { name, qty, total };
+      return { name, qty };
     })
     .filter((x) => x.name);
 
@@ -130,9 +94,6 @@ function OrderItemsPreview({ items }: { items?: PedidoItem[] | null }) {
           <div className="min-w-0 truncate">
             <span className="text-[color:var(--muted)]">{it.qty}x</span>{" "}
             <span className="text-[color:var(--text)]">{it.name}</span>
-          </div>
-          <div className="shrink-0 text-[color:var(--muted)]">
-            {it.total != null ? formatMoneyBRL(Number(it.total)) : "—"}
           </div>
         </div>
       ))}
@@ -158,25 +119,18 @@ function OrderCard({ p }: { p: PedidoRow }) {
             </div>
             <Pill tone={tone}>{status}</Pill>
           </div>
+
           <div className="mt-2 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
             <span>
               Local: <span className="text-[color:var(--text-2)]">{p.local ?? "—"}</span>
             </span>
             <span>
               Criado:{" "}
-              <span className="text-[color:var(--text-2)]">
-                {new Date(p.created_at).toLocaleString("pt-BR")}
-              </span>
+              <span className="text-[color:var(--text-2)]">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
             </span>
           </div>
 
           <OrderItemsPreview items={p.items ?? null} />
-        </div>
-
-        <div className="shrink-0 text-right">
-          <div className="text-sm font-semibold text-[color:var(--text)]">
-            {formatMoneyBRL(p.total)}
-          </div>
         </div>
       </div>
     </div>
@@ -199,18 +153,14 @@ function KanbanColumn({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-[color:var(--text)]">{title}</div>
-          {subtitle ? (
-            <div className="mt-1 text-xs text-[color:var(--muted)]">{subtitle}</div>
-          ) : null}
+          {subtitle ? <div className="mt-1 text-xs text-[color:var(--muted)]">{subtitle}</div> : null}
         </div>
         <Pill>{pedidos.length}</Pill>
       </div>
 
       <div className="mt-4 space-y-3">
         {pedidos.length === 0 ? (
-          <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
-            {empty ?? "Sem pedidos aqui ainda."}
-          </div>
+          <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">{empty ?? "Sem pedidos aqui ainda."}</div>
         ) : (
           pedidos.map((p) => <OrderCard key={p.id} p={p} />)
         )}
@@ -242,11 +192,7 @@ function parseBarracaIdFromLocation(): string | null {
   return null;
 }
 
-export default function AppHomeClient({
-  barracaId,
-}: {
-  barracaId: string | null;
-}) {
+export default function AppHomeClient({ barracaId }: { barracaId: string | null }) {
   const [effectiveBarracaId, setEffectiveBarracaId] = useState<string | null>(barracaId ?? null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -266,34 +212,14 @@ export default function AppHomeClient({
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Apenas indicadores operacionais (sem $$)
   const pedidosHoje = useMemo(() => {
     const now = new Date();
     return pedidos.filter((p) => {
       const dt = new Date(p.created_at);
-      return (
-        dt.getFullYear() === now.getFullYear() &&
-        dt.getMonth() === now.getMonth() &&
-        dt.getDate() === now.getDate()
-      );
+      return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth() && dt.getDate() === now.getDate();
     }).length;
   }, [pedidos]);
-
-  const faturamentoHoje = useMemo(() => {
-    const now = new Date();
-    return pedidos.reduce((acc, p) => {
-      const dt = new Date(p.created_at);
-      const isToday =
-        dt.getFullYear() === now.getFullYear() &&
-        dt.getMonth() === now.getMonth() &&
-        dt.getDate() === now.getDate();
-      return acc + (isToday ? Number(p.total ?? 0) : 0);
-    }, 0);
-  }, [pedidos]);
-
-  const ticketMedioHoje = useMemo(() => {
-    if (pedidosHoje === 0) return null;
-    return faturamentoHoje / pedidosHoje;
-  }, [faturamentoHoje, pedidosHoje]);
 
   const emPreparo = useMemo(() => {
     return pedidos.filter((p) => normalizeStatus(p.status) === "preparando").length;
@@ -315,8 +241,7 @@ export default function AppHomeClient({
     }
 
     // mais recentes primeiro
-    const sortByNew = (a: PedidoRow, b: PedidoRow) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    const sortByNew = (a: PedidoRow, b: PedidoRow) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
     return {
       recebido: rec.sort(sortByNew),
@@ -341,10 +266,9 @@ export default function AppHomeClient({
       setLoading(true);
 
       try {
-        const res = await fetch(
-          `/api/app/pedidos?barraca_id=${encodeURIComponent(effectiveBarracaId)}&limit=50`,
-          { cache: "no-store" }
-        );
+        const res = await fetch(`/api/app/pedidos?barraca_id=${encodeURIComponent(effectiveBarracaId)}&limit=50`, {
+          cache: "no-store",
+        });
 
         const json = await res.json();
         if (cancelled) return;
@@ -375,99 +299,64 @@ export default function AppHomeClient({
   return (
     <div className="space-y-6">
       <div>
-        <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">
-          Visão geral
-        </div>
-        <div className="mt-1 text-sm text-[color:var(--text-2)]">
-          Operação e indicadores do dia (ambiente TEST).
-        </div>
+        <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">Painel operacional</div>
+        <div className="mt-1 text-sm text-[color:var(--text-2)]">Pedidos em tempo real para cozinha/garçom (ambiente TEST).</div>
       </div>
 
+      {/* Indicadores operacionais (sem finanças) */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Pedidos hoje" value={effectiveBarracaId ? String(pedidosHoje) : "—"} />
-        <StatCard
-          label="Faturamento hoje"
-          value={effectiveBarracaId ? formatMoneyBRL(faturamentoHoje) : "—"}
-        />
-        <StatCard
-          label="Ticket médio"
-          value={effectiveBarracaId ? formatMoneyBRL(ticketMedioHoje ?? null) : "—"}
-        />
-        <StatCard label="Em preparo" value={effectiveBarracaId ? String(emPreparo) : "—"} />
+        <div className="wavie-card p-4">
+          <div className="text-xs text-[color:var(--text-2)]">Pedidos hoje</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">
+            {effectiveBarracaId ? String(pedidosHoje) : "—"}
+          </div>
+        </div>
+
+        <div className="wavie-card p-4">
+          <div className="text-xs text-[color:var(--text-2)]">Em preparo</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">
+            {effectiveBarracaId ? String(emPreparo) : "—"}
+          </div>
+          <div className="mt-1 text-xs text-[color:var(--muted)]">Fila da cozinha agora</div>
+        </div>
       </div>
 
+      {/* Ações úteis para TEST (sem billing no operacional) */}
       <div className="flex flex-wrap gap-3">
-        <ButtonLink href="/app/billing">Ver cobrança</ButtonLink>
         <ButtonLink href="/b/nelsaodrinks">Abrir cardápio (nelsaodrinks)</ButtonLink>
-        <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">
-          Conectar barraca (exemplo)
-        </ButtonLink>
+        <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">Conectar barraca (exemplo)</ButtonLink>
       </div>
 
       {!effectiveBarracaId ? (
         <div className="wavie-card p-6">
           <div className="text-sm font-semibold text-[color:var(--text)]">Conectar barraca</div>
-          <div className="mt-2 text-sm text-[color:var(--text-2)]">
-            Para carregar pedidos, abra:
-          </div>
+          <div className="mt-2 text-sm text-[color:var(--text-2)]">Para carregar pedidos, abra:</div>
           <div className="mt-3 flex flex-wrap gap-3">
-            <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">
-              Abrir barraca (exemplo)
-            </ButtonLink>
+            <ButtonLink href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95">Abrir barraca (exemplo)</ButtonLink>
             <ButtonLink href="/b/nelsaodrinks">Abrir cardápio (nelsaodrinks)</ButtonLink>
           </div>
-          <div className="mt-3 text-xs text-[color:var(--muted)]">
-            Depois o login vai definir automaticamente a barraca do cliente.
-          </div>
+          <div className="mt-3 text-xs text-[color:var(--muted)]">Depois o login vai definir automaticamente a barraca do cliente.</div>
         </div>
       ) : loading ? (
-        <div className="wavie-card p-6 text-sm text-[color:var(--text-2)]">
-          Carregando pedidos…
-        </div>
+        <div className="wavie-card p-6 text-sm text-[color:var(--text-2)]">Carregando pedidos…</div>
       ) : errorMsg ? (
         <div className="wavie-card p-6">
-          <div className="text-sm font-semibold text-[color:var(--text)]">
-            Não foi possível carregar pedidos
-          </div>
+          <div className="text-sm font-semibold text-[color:var(--text)]">Não foi possível carregar pedidos</div>
           <div className="mt-2 text-sm text-[color:var(--text-2)]">{errorMsg}</div>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
-          <KanbanColumn
-            title="Recebido"
-            subtitle="Novos pedidos"
-            pedidos={grouped.recebido}
-            empty="Sem pedidos recebidos no momento."
-          />
-          <KanbanColumn
-            title="Preparando"
-            subtitle="Em produção"
-            pedidos={grouped.preparando}
-            empty="Nada em preparo agora."
-          />
-          <KanbanColumn
-            title="Pronto"
-            subtitle="Entregar agora"
-            pedidos={grouped.pronto}
-            empty="Nada pronto para entrega."
-          />
-          <KanbanColumn
-            title="Entregue"
-            subtitle="Últimos pedidos"
-            pedidos={grouped.entregue}
-            empty="Sem entregues ainda."
-          />
+          <KanbanColumn title="Recebido" subtitle="Novos pedidos" pedidos={grouped.recebido} empty="Sem pedidos recebidos no momento." />
+          <KanbanColumn title="Preparando" subtitle="Em produção" pedidos={grouped.preparando} empty="Nada em preparo agora." />
+          <KanbanColumn title="Pronto" subtitle="Entregar agora" pedidos={grouped.pronto} empty="Nada pronto para entrega." />
+          <KanbanColumn title="Entregue" subtitle="Últimos pedidos" pedidos={grouped.entregue} empty="Sem entregues ainda." />
         </div>
       )}
 
       <div className="wavie-card p-5">
-        <div className="text-sm font-semibold text-[color:var(--text)]">Painel operacional</div>
-        <div className="mt-1 text-sm text-[color:var(--text-2)]">
-          Itens sempre visíveis, status claro e leitura rápida em celular/tablet.
-        </div>
-        <div className="mt-3 text-xs text-[color:var(--muted)]">
-          Atualiza automaticamente a cada 5s para sensação de tempo real.
-        </div>
+        <div className="text-sm font-semibold text-[color:var(--text)]">Foco: execução</div>
+        <div className="mt-1 text-sm text-[color:var(--text-2)]">Itens sempre visíveis, status claro e leitura rápida em celular/tablet.</div>
+        <div className="mt-3 text-xs text-[color:var(--muted)]">Atualiza automaticamente a cada 5s para sensação de tempo real.</div>
       </div>
     </div>
   );
