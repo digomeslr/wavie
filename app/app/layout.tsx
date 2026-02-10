@@ -1,41 +1,41 @@
 // app/app/layout.tsx
-import type { Metadata } from "next";
-import "./theme.css";
+import type { ReactNode } from "react";
 
-export const metadata: Metadata = {
-  title: "Wavie App",
-};
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+export default function AppLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="wavie-app min-h-screen">
+    <div className="wavie-bg min-h-screen">
       {/* Topbar */}
-      <header className="sticky top-0 z-10 border-b border-[color:var(--border)] bg-[color:var(--bg)]/80 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+      <header className="wavie-topbar">
+        <div className="wavie-topbar-inner">
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-1)]" />
+            <div className="wavie-mark" aria-hidden="true" />
             <div className="leading-tight">
               <div className="text-sm font-semibold">Wavie</div>
-              <div className="text-xs text-[color:var(--text-2)]">
+              <div className="text-xs text-[color:var(--muted)]">
                 Painel do cliente
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Status da conta (mock) */}
-            <span className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface-1)] px-3 py-1 text-xs text-[color:var(--text-2)]">
-              Status: <span className="text-[color:var(--text)]">Ativa</span>
+          <div className="flex items-center gap-2">
+            <span className="wavie-pill">
+              Status: <strong className="ml-1">Ativa</strong>
             </span>
-
-            <button className="rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-1)] px-3 py-2 text-xs text-[color:var(--text)] hover:bg-[color:var(--surface-2)]">
+            <a href="/wavie/logout" className="wavie-pill hover:opacity-90">
               Sair
-            </button>
+            </a>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
+      {/* Content */}
+      <main className="wavie-container py-8">
+        {/* ESSENCIAL: sem isso, as páginas /app/* não aparecem */}
+        {children}
+      </main>
     </div>
   );
 }
