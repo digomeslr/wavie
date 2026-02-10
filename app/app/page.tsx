@@ -1,7 +1,10 @@
 // app/app/page.tsx
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import AppHomeClient from "./AppHomeClient";
 
-export default async function AppPage({
+export default function AppPage({
   searchParams,
 }: {
   searchParams?: { [key: string]: string | string[] | undefined };
