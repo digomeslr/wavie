@@ -1,4 +1,5 @@
 // app/app/layout.tsx
+import "./theme.css";
 import type { ReactNode } from "react";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +8,6 @@ export const revalidate = 0;
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="wavie-bg min-h-screen">
-      {/* Topbar */}
       <header className="wavie-topbar">
         <div className="wavie-topbar-inner">
           <div className="flex items-center gap-3">
@@ -31,11 +31,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {/* Content */}
-      <main className="wavie-container py-8">
-        {/* ESSENCIAL: sem isso, as páginas /app/* não aparecem */}
-        {children}
-      </main>
+      <main className="wavie-container py-8">{children}</main>
     </div>
   );
 }
