@@ -252,7 +252,7 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
         <div className="wavie-card p-6">
           <div className="text-sm font-semibold">Conectar barraca</div>
           <div className="mt-3 text-xs text-[color:var(--muted)]">
-          Abra /app/barraca/<barraca_id> para carregar pedidos.
+          Abra /app/barraca/{"<barraca_id>"} para carregar pedidos.
           </div>
         </div>
       ) : loading ? (
