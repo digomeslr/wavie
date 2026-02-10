@@ -209,6 +209,9 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
 
   return (
     <div className="space-y-6">
+      <div className="text-xs text-[color:var(--muted)]">
+        barracaId: <span className="text-[color:var(--text-2)]">{barracaId ?? "null"}</span>
+      </div>  
       <div>
         <div className="text-xl font-semibold tracking-tight">Visão geral</div>
         <div className="mt-1 text-sm text-[color:var(--text-2)]">
