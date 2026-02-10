@@ -50,7 +50,7 @@ const NEXT: Record<string, string | null> = {
 
 function Pill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-white/80">
+    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/80">
       {children}
     </span>
   );
@@ -69,31 +69,41 @@ function ActionButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`
-        mt-3 inline-flex w-full items-center justify-center rounded-lg border
-        border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-white/90
-        hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50
-      `}
+      className={[
+        "mt-3 inline-flex w-full items-center justify-center rounded-xl border px-3 py-2 text-xs font-semibold",
+        "border-white/10 bg-white/6 text-white/90",
+        "hover:bg-white/10 hover:border-white/20 active:scale-[0.99]",
+        "focus:outline-none focus:ring-2 focus:ring-white/10",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+      ].join(" ")}
     >
       {label}
     </button>
   );
 }
 
+function QtyChip({ n }: { n: number }) {
+  return (
+    <span className="inline-flex items-center rounded-md border border-white/10 bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold text-white/70">
+      {n}x
+    </span>
+  );
+}
+
 function OrderItems({ items }: { items?: PedidoItem[] }) {
   if (!items || items.length === 0) {
-    return <div className="mt-2 text-xs text-white/40">Itens: —</div>;
+    return <div className="mt-3 text-xs text-white/40">Itens: —</div>;
   }
 
-  const max = 4;
+  const max = 5;
   const head = items.slice(0, max);
 
   return (
-    <div className="mt-2 space-y-1 text-xs">
+    <div className="mt-3 space-y-1.5 text-xs">
       {head.map((item, i) => (
-        <div key={i} className="flex gap-2">
-          <span className="text-white/50">{item.quantity}x</span>
-          <span className="text-white">{item.name}</span>
+        <div key={i} className="flex items-start gap-2">
+          <QtyChip n={item.quantity} />
+          <div className="min-w-0 truncate text-white/90">{item.name}</div>
         </div>
       ))}
       {items.length > max ? (
@@ -125,16 +135,18 @@ function OrderCard({
       : "";
 
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-      <div className="flex items-center gap-2">
-        <div className="font-semibold text-white">
-          Pedido #{p.id.slice(0, 6).toUpperCase()}
+    <div className="rounded-2xl border border-white/10 bg-gradient-to-b from-white/8 to-white/4 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold tracking-tight text-white">
+            Pedido <span className="text-white/70">#{p.id.slice(0, 6).toUpperCase()}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-white/45">
+            Local <span className="text-white/70">{p.local ?? "—"}</span> •{" "}
+            <span className="text-white/60">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
+          </div>
         </div>
         <Pill>{status}</Pill>
-      </div>
-
-      <div className="mt-1 text-xs text-white/50">
-        Local: {p.local ?? "—"} • {new Date(p.created_at).toLocaleString("pt-BR")}
       </div>
 
       <OrderItems items={p.items} />
@@ -177,11 +189,16 @@ export default function AppHomeClient() {
 
   async function load() {
     if (!barracaId) return;
-    const res = await fetch(`/api/app/pedidos?barraca_id=${encodeURIComponent(barracaId)}&limit=50`, { cache: "no-store" });
+
+    const res = await fetch(
+      `/api/app/pedidos?barraca_id=${encodeURIComponent(barracaId)}&limit=50`,
+      { cache: "no-store" }
+    );
     const json = await res.json();
     const next = (json?.data ?? []) as PedidoRow[];
-    const hash = JSON.stringify(next);
 
+    // evita re-render desnecessário
+    const hash = JSON.stringify(next);
     if (hash !== lastHash.current) {
       lastHash.current = hash;
       setPedidos(next);
@@ -190,11 +207,11 @@ export default function AppHomeClient() {
 
   useEffect(() => {
     if (!barracaId) return;
-    load();
 
+    load();
     const t = setInterval(() => {
       if (!stopPollingRef.current) load();
-    }, 20000); // 20s (mais profissional e menos intrusivo)
+    }, 20000);
 
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,11 +221,10 @@ export default function AppHomeClient() {
     const next = NEXT[current];
     if (!next) return;
 
-    // otimista: move no UI imediatamente
     setBusyId(id);
-    setPedidos((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, status: next } : p))
-    );
+
+    // otimista
+    setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: next } : p)));
 
     try {
       const res = await fetch(`/api/app/pedidos/${id}/status`, {
@@ -221,12 +237,9 @@ export default function AppHomeClient() {
 
       if (!res.ok) {
         // rollback
-        setPedidos((prev) =>
-          prev.map((p) => (p.id === id ? { ...p, status: current } : p))
-        );
+        setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
         alert(json?.error ?? "Erro ao atualizar status");
       } else {
-        // garante estado do servidor
         const updated = json?.data as PedidoRow;
         if (updated?.id) {
           setPedidos((prev) =>
@@ -235,10 +248,7 @@ export default function AppHomeClient() {
         }
       }
     } catch (e: any) {
-      // rollback
-      setPedidos((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: current } : p))
-      );
+      setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
       alert(e?.message ?? "Erro de rede");
     } finally {
       setBusyId(null);
@@ -259,6 +269,7 @@ export default function AppHomeClient() {
       else rec.push(p);
     }
 
+    // novo em cima sempre
     const sortByNew = (a: PedidoRow, b: PedidoRow) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
@@ -272,21 +283,22 @@ export default function AppHomeClient() {
 
   if (!barracaId) {
     return (
-      <div className="p-6 text-sm text-white/60">
+      <div className="wavie-card p-6 text-sm text-[color:var(--text-2)]">
         Nenhuma barraca conectada pela URL.
       </div>
     );
   }
 
   const Column = ({ title, items }: { title: string; items: PedidoRow[] }) => (
-    <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+    <div className="wavie-card p-4">
       <div className="mb-3 flex items-center justify-between">
-        <div className="font-semibold text-white">{title}</div>
+        <div className="text-sm font-semibold text-[color:var(--text)]">{title}</div>
         <Pill>{items.length}</Pill>
       </div>
+
       <div className="space-y-3">
         {items.length === 0 ? (
-          <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-xs text-white/40">
+          <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
             Sem pedidos aqui ainda.
           </div>
         ) : (
