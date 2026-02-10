@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 
 type PedidoRow = {
   id: string;
@@ -62,7 +63,9 @@ function EmptyOrders() {
         Este painel é{" "}
         <strong className="text-[color:var(--text)]">operacional</strong>. Quando
         um pedido entrar, ele aparecerá aqui em tempo real, com{" "}
-        <strong className="text-[color:var(--text)]">itens sempre visíveis</strong>
+        <strong className="text-[color:var(--text)]">
+          itens sempre visíveis
+        </strong>
         , status claro e ações rápidas.
         <div className="mt-2 text-xs text-[color:var(--muted)]">
           Otimizado para uso contínuo em celular e tablet.
@@ -124,7 +127,34 @@ function OrdersList({ pedidos }: { pedidos: PedidoRow[] }) {
   );
 }
 
-export default function AppHomeClient({ barracaId }: { barracaId: string | null }) {
+function extractBarracaIdFromPath(pathname: string | null): string | null {
+  if (!pathname) return null;
+
+  // Aceita:
+  // /app/barraca/<uuid>
+  // /app/barraca/<qualquer-string>
+  const m1 = pathname.match(/^\/app\/barraca\/([^\/\?#]+)$/i);
+  if (m1?.[1]) return decodeURIComponent(m1[1]);
+
+  // fallback antigo (se você acessar /app/<uuid>)
+  const m2 = pathname.match(/^\/app\/([^\/\?#]+)$/i);
+  if (m2?.[1] && m2[1] !== "billing") return decodeURIComponent(m2[1]);
+
+  return null;
+}
+
+export default function AppHomeClient({
+  barracaId,
+}: {
+  barracaId: string | null;
+}) {
+  const pathname = usePathname();
+
+  // ✅ Fonte de verdade (robusta): prop OU URL
+  const effectiveBarracaId = useMemo(() => {
+    return barracaId ?? extractBarracaIdFromPath(pathname);
+  }, [barracaId, pathname]);
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
@@ -169,7 +199,7 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
     async function load() {
       setErrorMsg(null);
 
-      if (!barracaId) {
+      if (!effectiveBarracaId) {
         setPedidos([]);
         return;
       }
@@ -178,7 +208,9 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
 
       try {
         const res = await fetch(
-          `/api/app/pedidos?barraca_id=${encodeURIComponent(barracaId)}&limit=20`,
+          `/api/app/pedidos?barraca_id=${encodeURIComponent(
+            effectiveBarracaId
+          )}&limit=20`,
           { cache: "no-store" }
         );
 
@@ -205,13 +237,26 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
     return () => {
       cancelled = true;
     };
-  }, [barracaId]);
+  }, [effectiveBarracaId]);
 
   return (
     <div className="space-y-6">
+      {/* Debug mínimo (vamos remover depois) */}
       <div className="text-xs text-[color:var(--muted)]">
-        barracaId: <span className="text-[color:var(--text-2)]">{barracaId ?? "null"}</span>
-      </div>  
+        barracaId(prop):{" "}
+        <span className="text-[color:var(--text-2)]">
+          {barracaId ?? "null"}
+        </span>{" "}
+        • barracaId(url):{" "}
+        <span className="text-[color:var(--text-2)]">
+          {extractBarracaIdFromPath(pathname) ?? "null"}
+        </span>{" "}
+        • efetivo:{" "}
+        <span className="text-[color:var(--text)]">
+          {effectiveBarracaId ?? "null"}
+        </span>
+      </div>
+
       <div>
         <div className="text-xl font-semibold tracking-tight">Visão geral</div>
         <div className="mt-1 text-sm text-[color:var(--text-2)]">
@@ -220,16 +265,22 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Pedidos hoje" value={barracaId ? String(pedidosHoje) : "—"} />
+        <StatCard
+          label="Pedidos hoje"
+          value={effectiveBarracaId ? String(pedidosHoje) : "—"}
+        />
         <StatCard
           label="Faturamento hoje"
-          value={barracaId ? formatMoneyBRL(faturamentoHoje) : "—"}
+          value={effectiveBarracaId ? formatMoneyBRL(faturamentoHoje) : "—"}
         />
         <StatCard
           label="Ticket médio"
-          value={barracaId ? formatMoneyBRL(ticketMedioHoje ?? null) : "—"}
+          value={effectiveBarracaId ? formatMoneyBRL(ticketMedioHoje ?? null) : "—"}
         />
-        <StatCard label="Em preparo" value={barracaId ? String(emPreparo) : "—"} />
+        <StatCard
+          label="Em preparo"
+          value={effectiveBarracaId ? String(emPreparo) : "—"}
+        />
       </div>
 
       <div className="flex flex-wrap gap-3">
@@ -246,13 +297,21 @@ export default function AppHomeClient({ barracaId }: { barracaId: string | null 
         >
           Abrir cardápio (nelsaodrinks)
         </a>
+
+        {/* botão direto para o exemplo, pra não ficar “sem ação” */}
+        <a
+          href="/app/barraca/9f56ce53-1ec1-4e03-ae4c-64b2b2085e95"
+          className="wavie-card px-4 py-3 text-sm hover:bg-[color:var(--surface-2)]"
+        >
+          Conectar barraca (exemplo)
+        </a>
       </div>
 
-      {!barracaId ? (
+      {!effectiveBarracaId ? (
         <div className="wavie-card p-6">
           <div className="text-sm font-semibold">Conectar barraca</div>
           <div className="mt-3 text-xs text-[color:var(--muted)]">
-          Abra /app/barraca/{"<barraca_id>"} para carregar pedidos.
+            Abra /app/barraca/{"<barraca_id>"} para carregar pedidos.
           </div>
         </div>
       ) : loading ? (
