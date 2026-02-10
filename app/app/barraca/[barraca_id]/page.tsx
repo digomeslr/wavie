@@ -9,5 +9,10 @@ export default function AppBarracaPage({
 }: {
   params: { barraca_id: string };
 }) {
-  return <AppHomeClient barracaId={params.barraca_id} />;
+  // garante string e decodifica
+  const barracaId = params?.barraca_id
+    ? decodeURIComponent(params.barraca_id)
+    : null;
+
+  return <AppHomeClient barracaId={barracaId} />;
 }
