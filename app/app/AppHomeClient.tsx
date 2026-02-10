@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 type PedidoItem = { name: string; quantity: number };
 
@@ -52,37 +53,52 @@ function toneClasses(tone: Tone) {
   if (tone === "recebido") {
     return {
       colTitle: "text-sky-200",
-      colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_60px_rgba(56,189,248,0.10)]",
+      colGlow:
+        "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_60px_rgba(56,189,248,0.10)]",
       edge: "before:bg-sky-400/70",
       pill: "border-sky-400/25 bg-sky-400/12 text-sky-200",
       chip: "border-sky-400/25 bg-sky-400/12 text-sky-100",
       local: "border-sky-400/25 bg-sky-400/12 text-sky-100",
-      btn: "border-sky-400/30 bg-sky-400/18 hover:bg-sky-400/24 hover:border-sky-400/40",
+      btn:
+        "border-sky-400/30 bg-sky-400/18 hover:bg-sky-400/24 hover:border-sky-400/40",
       cardBg: "from-sky-500/10 to-white/4",
+      slaGood: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
+      slaWarn: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+      slaBad: "border-rose-400/25 bg-rose-400/10 text-rose-200",
     };
   }
   if (tone === "preparando") {
     return {
       colTitle: "text-amber-200",
-      colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_60px_rgba(245,158,11,0.10)]",
+      colGlow:
+        "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_60px_rgba(245,158,11,0.10)]",
       edge: "before:bg-amber-400/70",
       pill: "border-amber-400/25 bg-amber-400/12 text-amber-200",
       chip: "border-amber-400/25 bg-amber-400/12 text-amber-100",
       local: "border-amber-400/25 bg-amber-400/12 text-amber-100",
-      btn: "border-amber-400/30 bg-amber-400/18 hover:bg-amber-400/24 hover:border-amber-400/40",
+      btn:
+        "border-amber-400/30 bg-amber-400/18 hover:bg-amber-400/24 hover:border-amber-400/40",
       cardBg: "from-amber-500/10 to-white/4",
+      slaGood: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
+      slaWarn: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+      slaBad: "border-rose-400/25 bg-rose-400/10 text-rose-200",
     };
   }
   if (tone === "pronto") {
     return {
       colTitle: "text-emerald-200",
-      colGlow: "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_70px_rgba(34,197,94,0.12)]",
+      colGlow:
+        "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_0_70px_rgba(34,197,94,0.12)]",
       edge: "before:bg-emerald-400/80",
       pill: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200",
       chip: "border-emerald-400/25 bg-emerald-400/12 text-emerald-100",
       local: "border-emerald-400/25 bg-emerald-400/12 text-emerald-100",
-      btn: "border-emerald-400/35 bg-emerald-400/20 hover:bg-emerald-400/26 hover:border-emerald-400/45",
+      btn:
+        "border-emerald-400/35 bg-emerald-400/20 hover:bg-emerald-400/26 hover:border-emerald-400/45",
       cardBg: "from-emerald-500/12 to-white/4",
+      slaGood: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
+      slaWarn: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+      slaBad: "border-rose-400/25 bg-rose-400/10 text-rose-200",
     };
   }
   return {
@@ -94,10 +110,13 @@ function toneClasses(tone: Tone) {
     local: "border-white/10 bg-white/8 text-white/70",
     btn: "border-white/10 bg-white/6 hover:bg-white/10 hover:border-white/20",
     cardBg: "from-white/8 to-white/4",
+    slaGood: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
+    slaWarn: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+    slaBad: "border-rose-400/25 bg-rose-400/10 text-rose-200",
   };
 }
 
-function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+function Pill({ tone, children }: { tone: Tone; children: ReactNode }) {
   const t = toneClasses(tone);
   return (
     <span
@@ -174,13 +193,30 @@ function LocalBadge({ tone, local }: { tone: Tone; local: string | null }) {
   );
 }
 
+/** PRO++: agrupa itens iguais somando quantidades */
+function groupItems(items?: PedidoItem[] | null): PedidoItem[] {
+  const arr = items ?? [];
+  const map = new Map<string, number>();
+
+  for (const it of arr) {
+    const name = (it?.name ?? "").trim();
+    if (!name) continue;
+    const qty = Number(it?.quantity ?? 1);
+    map.set(name, (map.get(name) ?? 0) + (Number.isFinite(qty) ? qty : 1));
+  }
+
+  return Array.from(map.entries()).map(([name, quantity]) => ({ name, quantity }));
+}
+
 function OrderItems({ tone, items }: { tone: Tone; items?: PedidoItem[] }) {
-  if (!items || items.length === 0) {
+  const grouped = groupItems(items);
+
+  if (!grouped.length) {
     return <div className="mt-3 text-xs text-white/40">Itens: —</div>;
   }
 
   const max = 6;
-  const head = items.slice(0, max);
+  const head = grouped.slice(0, max);
 
   return (
     <div className="mt-3 space-y-1.5 text-xs">
@@ -190,8 +226,8 @@ function OrderItems({ tone, items }: { tone: Tone; items?: PedidoItem[] }) {
           <div className="min-w-0 truncate text-white/90">{item.name}</div>
         </div>
       ))}
-      {items.length > max ? (
-        <div className="text-white/40">+ {items.length - max} itens</div>
+      {grouped.length > max ? (
+        <div className="text-white/40">+ {grouped.length - max} itens</div>
       ) : null}
     </div>
   );
@@ -202,18 +238,107 @@ function minutesSince(createdAt: string) {
   return Math.max(0, Math.floor(ms / 60000));
 }
 
-function AgeBadge({ mins }: { mins: number }) {
-  // thresholds simples e efetivos
-  const tone =
-    mins >= 25 ? "border-rose-400/25 bg-rose-400/10 text-rose-200"
-    : mins >= 12 ? "border-amber-400/25 bg-amber-400/10 text-amber-200"
-    : "border-emerald-400/25 bg-emerald-400/10 text-emerald-200";
+/** PRO++: SLA 10/20min */
+function SLABadge({ mins, tone }: { mins: number; tone: Tone }) {
+  const t = toneClasses(tone);
+  const cls =
+    mins >= 20 ? t.slaBad : mins >= 10 ? t.slaWarn : t.slaGood;
 
   return (
-    <span className={["inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold", tone].join(" ")}>
+    <span
+      className={[
+        "inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold",
+        cls,
+      ].join(" ")}
+      title="Tempo desde a criação do pedido"
+    >
       ⏱ {mins} min
     </span>
   );
+}
+
+function Toggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!value)}
+      className={[
+        "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold",
+        "border-white/10 bg-white/6 text-white/80 hover:bg-white/10 hover:border-white/20",
+      ].join(" ")}
+      aria-pressed={value}
+    >
+      <span
+        className={[
+          "h-2.5 w-2.5 rounded-full",
+          value ? "bg-emerald-400" : "bg-white/25",
+        ].join(" ")}
+      />
+      {label}
+    </button>
+  );
+}
+
+// Som via WebAudio (sem assets externos)
+function beep(kind: "new" | "ready") {
+  try {
+    const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as any;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+
+    const freq = kind === "new" ? 880 : 520;
+
+    o.type = "sine";
+    o.frequency.value = freq;
+
+    g.gain.value = 0.0001;
+    o.connect(g);
+    g.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "new" ? 0.14 : 0.22));
+
+    o.start(now);
+    o.stop(now + (kind === "new" ? 0.16 : 0.25));
+
+    o.onended = () => {
+      try {
+        ctx.close();
+      } catch {}
+    };
+  } catch {}
+}
+
+function vibrate(pattern: number | number[]) {
+  try {
+    if ((navigator as any)?.vibrate) (navigator as any).vibrate(pattern);
+  } catch {}
+}
+
+function pickPriorityId(rows: PedidoRow[]) {
+  // “Próximo a agir” = o que está há mais tempo esperando (maior mins)
+  let bestId: string | null = null;
+  let bestMins = -1;
+
+  for (const p of rows) {
+    const mins = minutesSince(p.created_at);
+    if (mins > bestMins) {
+      bestMins = mins;
+      bestId = p.id;
+    }
+  }
+  return bestId;
 }
 
 function OrderCard({
@@ -221,11 +346,15 @@ function OrderCard({
   onAdvance,
   busy,
   isNew,
+  isPriority,
+  priorityKind,
 }: {
   p: PedidoRow;
   onAdvance: (id: string, current: Tone) => void;
   busy: boolean;
   isNew: boolean;
+  isPriority: boolean;
+  priorityKind: "recebido" | "pronto" | null;
 }) {
   const status = normalizeStatus(p.status);
   const next = NEXT[status];
@@ -241,6 +370,16 @@ function OrderCard({
       ? "Marcar entregue"
       : "";
 
+  const priorityRing =
+    isPriority && priorityKind === "pronto"
+      ? "ring-2 ring-emerald-300/35 animate-[pulse_1.2s_ease-in-out_infinite]"
+      : isPriority && priorityKind === "recebido"
+      ? "ring-2 ring-sky-300/30 animate-[pulse_1.6s_ease-in-out_infinite]"
+      : "";
+
+  const newPulse =
+    isNew ? "ring-2 ring-sky-300/25 animate-[pulse_1.2s_ease-in-out_3]" : "";
+
   return (
     <div
       className={[
@@ -249,7 +388,8 @@ function OrderCard({
         t.colGlow,
         "before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full",
         t.edge,
-        isNew ? "ring-2 ring-sky-300/25 animate-[pulse_1.2s_ease-in-out_3]" : "",
+        newPulse,
+        priorityRing,
       ].join(" ")}
     >
       <div className="flex items-start justify-between gap-3">
@@ -257,12 +397,27 @@ function OrderCard({
           <div className="text-sm font-semibold tracking-tight text-white">
             Pedido <span className="text-white/70">#{p.id.slice(0, 6).toUpperCase()}</span>
           </div>
+
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <AgeBadge mins={mins} />
+            <SLABadge mins={mins} tone={status} />
             <Pill tone={status}>{status}</Pill>
+
+            {isPriority && priorityKind === "pronto" ? (
+              <span className="text-[11px] font-semibold text-emerald-200/90">
+                ⚡ entregar agora
+              </span>
+            ) : null}
+            {isPriority && priorityKind === "recebido" ? (
+              <span className="text-[11px] font-semibold text-sky-200/90">
+                ⏭ iniciar preparo
+              </span>
+            ) : null}
           </div>
+
           <div className="mt-1 text-[11px] text-white/45">
-            <span className="text-white/60">{new Date(p.created_at).toLocaleString("pt-BR")}</span>
+            <span className="text-white/60">
+              {new Date(p.created_at).toLocaleString("pt-BR")}
+            </span>
           </div>
         </div>
       </div>
@@ -285,71 +440,6 @@ function OrderCard({
   );
 }
 
-function Toggle({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      onClick={() => onChange(!value)}
-      className={[
-        "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold",
-        "border-white/10 bg-white/6 text-white/80 hover:bg-white/10 hover:border-white/20",
-      ].join(" ")}
-      aria-pressed={value}
-    >
-      <span className={["h-2.5 w-2.5 rounded-full", value ? "bg-emerald-400" : "bg-white/25"].join(" ")} />
-      {label}
-    </button>
-  );
-}
-
-// Som via WebAudio (sem assets externos)
-function beep(kind: "new" | "ready") {
-  try {
-    const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as any;
-    if (!Ctx) return;
-    const ctx = new Ctx();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-
-    // "new": tom mais agudo curto; "ready": tom mais grave/cheio
-    const freq = kind === "new" ? 880 : 520;
-
-    o.type = "sine";
-    o.frequency.value = freq;
-
-    g.gain.value = 0.0001;
-    o.connect(g);
-    g.connect(ctx.destination);
-
-    const now = ctx.currentTime;
-    // ataque
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
-    // release
-    g.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "new" ? 0.14 : 0.22));
-
-    o.start(now);
-    o.stop(now + (kind === "new" ? 0.16 : 0.25));
-
-    o.onended = () => {
-      try { ctx.close(); } catch {}
-    };
-  } catch {}
-}
-
-function vibrate(pattern: number | number[]) {
-  try {
-    if (navigator?.vibrate) navigator.vibrate(pattern);
-  } catch {}
-}
-
 export default function AppHomeClient() {
   const [barracaId, setBarracaId] = useState<string | null>(null);
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
@@ -360,6 +450,9 @@ export default function AppHomeClient() {
 
   // PRO: entregue compacto
   const [showAllDelivered, setShowAllDelivered] = useState(false);
+
+  // PRO++: foco
+  const [focusMode, setFocusMode] = useState(false);
 
   const stopPollingRef = useRef(false);
   const lastHash = useRef("");
@@ -409,7 +502,6 @@ export default function AppHomeClient() {
       prevStatus.set(p.id, tone);
     }
 
-    // atualiza seen
     for (const p of arr) seen.add(p.id);
 
     if (newly.size > 0) {
@@ -428,7 +520,6 @@ export default function AppHomeClient() {
       }, 12000);
     }
 
-    // alertas (opcionais)
     if (alertsEnabled) {
       if (hasNewRecebido) {
         beep("new");
@@ -477,7 +568,6 @@ export default function AppHomeClient() {
 
     setBusyId(id);
 
-    // otimista
     setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: next } : p)));
 
     try {
@@ -522,6 +612,7 @@ export default function AppHomeClient() {
       else rec.push(p);
     }
 
+    // (display) mais recentes primeiro
     const sortByNew = (a: PedidoRow, b: PedidoRow) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
@@ -538,6 +629,10 @@ export default function AppHomeClient() {
     return grouped.entregue.slice(0, 5);
   }, [grouped.entregue, showAllDelivered]);
 
+  // PRO++: prioridade por tempo (o mais “velho”)
+  const priorityRecebidoId = useMemo(() => pickPriorityId(grouped.recebido), [grouped.recebido]);
+  const priorityProntoId = useMemo(() => pickPriorityId(grouped.pronto), [grouped.pronto]);
+
   if (!barracaId) {
     return (
       <div className="wavie-card p-6 text-sm text-[color:var(--text-2)]">
@@ -551,13 +646,16 @@ export default function AppHomeClient() {
     title,
     items,
     compactFooter,
+    hideEmptyHint,
   }: {
     tone: Tone;
     title: string;
     items: PedidoRow[];
-    compactFooter?: React.ReactNode;
+    compactFooter?: ReactNode;
+    hideEmptyHint?: boolean;
   }) => {
     const t = toneClasses(tone);
+
     return (
       <div className={["wavie-card p-4", t.colGlow].join(" ")}>
         <div className="mb-3 flex items-center justify-between">
@@ -567,19 +665,38 @@ export default function AppHomeClient() {
 
         <div className="space-y-3">
           {items.length === 0 ? (
-            <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
-              Sem pedidos aqui ainda.
-            </div>
+            hideEmptyHint ? null : (
+              <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
+                Sem pedidos aqui ainda.
+              </div>
+            )
           ) : (
-            items.map((p) => (
-              <OrderCard
-                key={p.id}
-                p={p}
-                onAdvance={advanceStatus}
-                busy={busyId === p.id}
-                isNew={newIds.has(p.id)}
-              />
-            ))
+            items.map((p) => {
+              const s = normalizeStatus(p.status);
+
+              const isPriority =
+                (s === "pronto" && p.id === priorityProntoId) ||
+                (s === "recebido" && p.id === priorityRecebidoId);
+
+              const priorityKind =
+                s === "pronto" && p.id === priorityProntoId
+                  ? "pronto"
+                  : s === "recebido" && p.id === priorityRecebidoId
+                  ? "recebido"
+                  : null;
+
+              return (
+                <OrderCard
+                  key={p.id}
+                  p={p}
+                  onAdvance={advanceStatus}
+                  busy={busyId === p.id}
+                  isNew={newIds.has(p.id)}
+                  isPriority={!!isPriority}
+                  priorityKind={priorityKind}
+                />
+              );
+            })
           )}
         </div>
 
@@ -590,34 +707,107 @@ export default function AppHomeClient() {
 
   return (
     <div className="space-y-4">
-      {/* Barra de controles (Operação PRO) */}
+      {/* Barra de controles */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-white/50">
           Atualiza a cada <span className="text-white/80 font-semibold">20s</span> •
-          Alertas opcionais para cozinha/garçom.
+          Prioridade automática: <span className="text-white/80 font-semibold">Pronto</span> e{" "}
+          <span className="text-white/80 font-semibold">Recebido</span>.
         </div>
+
         <div className="flex items-center gap-2">
+          <Toggle label="Modo foco" value={focusMode} onChange={setFocusMode} />
           <Toggle
             label="Som/Vibração"
             value={alertsEnabled}
             onChange={(v) => {
               setAlertsEnabled(v);
-              // “primeiro toque” desbloqueia áudio em alguns navegadores
               if (v) beep("new");
             }}
           />
         </div>
       </div>
 
-      {/* MOBILE/TABLET: Pronto no topo e “sticky” */}
+      {/* MOBILE/TABLET */}
       <div className="lg:hidden">
         <div className="sticky top-2 z-20">
           <Column tone="pronto" title="Pronto" items={grouped.pronto} />
         </div>
 
         <div className="mt-4 space-y-4">
-          <Column tone="recebido" title="Recebido" items={grouped.recebido} />
-          <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+          {/* foco: preparar logo após pronto */}
+          {focusMode ? (
+            <>
+              <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+              <Column
+                tone="recebido"
+                title="Recebido"
+                items={grouped.recebido.slice(0, 3)}
+                compactFooter={
+                  grouped.recebido.length > 3 ? (
+                    <div className="text-xs text-white/45">
+                      + {grouped.recebido.length - 3} recebidos (modo foco)
+                    </div>
+                  ) : null
+                }
+              />
+            </>
+          ) : (
+            <>
+              <Column tone="recebido" title="Recebido" items={grouped.recebido} />
+              <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+            </>
+          )}
+
+          {/* foco: esconde entregue */}
+          {!focusMode ? (
+            <Column
+              tone="entregue"
+              title="Entregue"
+              items={deliveredToShow}
+              compactFooter={
+                grouped.entregue.length > 5 ? (
+                  <button
+                    onClick={() => setShowAllDelivered((v) => !v)}
+                    className="w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:border-white/20"
+                  >
+                    {showAllDelivered ? "Ver menos" : `Ver mais (${grouped.entregue.length - 5})`}
+                  </button>
+                ) : null
+              }
+            />
+          ) : null}
+        </div>
+      </div>
+
+      {/* DESKTOP */}
+      <div
+        className={[
+          "hidden lg:grid lg:gap-4",
+          focusMode ? "lg:grid-cols-3" : "lg:grid-cols-4",
+        ].join(" ")}
+      >
+        {/* foco: Recebido compacta (menos espaço / menos cards) */}
+        <div className={focusMode ? "lg:col-span-1" : ""}>
+          <Column
+            tone="recebido"
+            title="Recebido"
+            items={focusMode ? grouped.recebido.slice(0, 3) : grouped.recebido}
+            compactFooter={
+              focusMode && grouped.recebido.length > 3 ? (
+                <div className="text-xs text-white/45">
+                  + {grouped.recebido.length - 3} recebidos (modo foco)
+                </div>
+              ) : null
+            }
+          />
+        </div>
+
+        {/* foco: dá mais “atenção” ao meio (visualmente mais importante já é pronto sticky / ring) */}
+        <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+        <Column tone="pronto" title="Pronto" items={grouped.pronto} />
+
+        {!focusMode ? (
           <Column
             tone="entregue"
             title="Entregue"
@@ -633,29 +823,7 @@ export default function AppHomeClient() {
               ) : null
             }
           />
-        </div>
-      </div>
-
-      {/* DESKTOP: 4 colunas */}
-      <div className="hidden lg:grid lg:grid-cols-4 lg:gap-4">
-        <Column tone="recebido" title="Recebido" items={grouped.recebido} />
-        <Column tone="preparando" title="Preparando" items={grouped.preparando} />
-        <Column tone="pronto" title="Pronto" items={grouped.pronto} />
-        <Column
-          tone="entregue"
-          title="Entregue"
-          items={deliveredToShow}
-          compactFooter={
-            grouped.entregue.length > 5 ? (
-              <button
-                onClick={() => setShowAllDelivered((v) => !v)}
-                className="w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:border-white/20"
-              >
-                {showAllDelivered ? "Ver menos" : `Ver mais (${grouped.entregue.length - 5})`}
-              </button>
-            ) : null
-          }
-        />
+        ) : null}
       </div>
     </div>
   );
