@@ -271,6 +271,27 @@ function SLABadge({ mins, tone }: { mins: number; tone: Tone }) {
   );
 }
 
+function LinkButton({
+    href,
+    label,
+  }: {
+    href: string;
+    label: string;
+  }) {
+    return (
+      <a
+        href={href}
+        className={[
+          "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold",
+          "border-white/10 bg-white/6 text-white/80 hover:bg-white/10 hover:border-white/20",
+        ].join(" ")}
+      >
+        <span className="h-2.5 w-2.5 rounded-full bg-white/25" />
+        {label}
+      </a>
+    );
+  }
+
 function Toggle({
   label,
   value,
@@ -839,18 +860,22 @@ export default function AppHomeClient() {
             Atualiza a cada <span className="text-white/80 font-semibold">20s</span> •
             Se houver falha de rede, o pedido fica <span className="text-white/80 font-semibold">pendente</span> e sincroniza depois.
           </div>
-
           <div className="flex items-center gap-2">
-            <Toggle label="Modo foco" value={focusMode} onChange={setFocusMode} />
-            <Toggle
-              label="Som/Vibração"
-              value={alertsEnabled}
-              onChange={(v) => {
-                setAlertsEnabled(v);
-                if (v) beep("new");
-              }}
-            />
-          </div>
+  <LinkButton
+    href={`/app/gerente?barraca_id=${encodeURIComponent(barracaId)}`}
+    label="Painel do Dono"
+  />
+
+  <Toggle
+    label="Som/Vibração"
+    value={alertsEnabled}
+    onChange={(v) => {
+      setAlertsEnabled(v);
+      if (v) beep("new");
+    }}
+  />
+</div>
+
         </div>
 
         {/* MOBILE/TABLET */}
