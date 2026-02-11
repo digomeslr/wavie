@@ -19,37 +19,72 @@ function formatMoneyBRL(v: number | null | undefined) {
   }
 }
 
+type Range = "today" | "24h" | "7d";
+
 type Metrics = {
-  range: "today" | "24h";
+  range: Range;
   since: string;
 
-  pedidosHoje: number;
-  faturamentoHoje: number;
+  pedidos: number;
+  faturamento: number;
   ticketMedio: number | null;
 
   sla: { green: number; yellow: number; red: number };
   slaPct: { green: number; yellow: number; red: number } | null;
 
   pedidosPorHora: Array<{ hour: number; count: number }>;
-  peak: { hour: number; count: number };
+  peakHour: { hour: number; count: number };
+
+  days: Array<{ date: string; count: number; revenue: number }>;
+  peakDay: { date: string; count: number; revenue: number };
 
   avgPrepMins: number | null;
 
   topProdutos: Array<{ name: string; qty: number }>;
-  ultimosPedidos: Array<{ id: string; total: number | null; status: string; created_at: string; local: string | null }>;
+  ultimosPedidos: Array<{
+    id: string;
+    total: number | null;
+    status: string;
+    created_at: string;
+    local: string | null;
+  }>;
 };
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="wavie-card p-4">
       <div className="text-xs text-[color:var(--text-2)]">{label}</div>
-      <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">{value}</div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">
+        {value}
+      </div>
       {hint ? <div className="mt-1 text-xs text-[color:var(--muted)]">{hint}</div> : null}
     </div>
   );
 }
 
-function HourBar({ data }: { data: Array<{ hour: number; count: number }> }) {
+function Segmented({ value, onChange }: { value: Range; onChange: (v: Range) => void }) {
+  const btn = (v: Range, label: string) => (
+    <button
+      onClick={() => onChange(v)}
+      className={[
+        "rounded-lg px-3 py-2 text-xs font-semibold transition",
+        value === v ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5",
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
+      {btn("today", "Hoje")}
+      {btn("24h", "24h")}
+      {btn("7d", "7 dias")}
+    </div>
+  );
+}
+
+function HourBars({ data }: { data: Array<{ hour: number; count: number }> }) {
   const max = Math.max(1, ...data.map((d) => d.count));
   return (
     <div className="mt-3 space-y-2">
@@ -57,13 +92,17 @@ function HourBar({ data }: { data: Array<{ hour: number; count: number }> }) {
         const pct = Math.round((d.count / max) * 100);
         return (
           <div key={d.hour} className="flex items-center gap-3">
-            <div className="w-10 text-xs text-[color:var(--muted)]">{String(d.hour).padStart(2, "0")}h</div>
+            <div className="w-10 text-xs text-[color:var(--muted)]">
+              {String(d.hour).padStart(2, "0")}h
+            </div>
             <div className="flex-1">
               <div className="h-2 w-full rounded-full bg-white/5">
                 <div className="h-2 rounded-full bg-white/20" style={{ width: `${pct}%` }} />
               </div>
             </div>
-            <div className="w-10 text-right text-xs font-semibold text-[color:var(--text-2)]">{d.count}</div>
+            <div className="w-10 text-right text-xs font-semibold text-[color:var(--text-2)]">
+              {d.count}
+            </div>
           </div>
         );
       })}
@@ -71,40 +110,37 @@ function HourBar({ data }: { data: Array<{ hour: number; count: number }> }) {
   );
 }
 
-function Segmented({
-  value,
-  onChange,
-}: {
-  value: "today" | "24h";
-  onChange: (v: "today" | "24h") => void;
-}) {
+function DayBars({ data }: { data: Array<{ date: string; count: number; revenue: number }> }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
   return (
-    <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
-      <button
-        onClick={() => onChange("today")}
-        className={[
-          "rounded-lg px-3 py-2 text-xs font-semibold",
-          value === "today" ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5",
-        ].join(" ")}
-      >
-        Hoje
-      </button>
-      <button
-        onClick={() => onChange("24h")}
-        className={[
-          "rounded-lg px-3 py-2 text-xs font-semibold",
-          value === "24h" ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5",
-        ].join(" ")}
-      >
-        Últimas 24h
-      </button>
+    <div className="mt-3 space-y-2">
+      {data.map((d) => {
+        const pct = Math.round((d.count / max) * 100);
+        const label = d.date.slice(5); // MM-DD
+        return (
+          <div key={d.date} className="flex items-center gap-3">
+            <div className="w-12 text-xs text-[color:var(--muted)]">{label}</div>
+            <div className="flex-1">
+              <div className="h-2 w-full rounded-full bg-white/5">
+                <div className="h-2 rounded-full bg-white/20" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+            <div className="w-10 text-right text-xs font-semibold text-[color:var(--text-2)]">
+              {d.count}
+            </div>
+          </div>
+        );
+      })}
+      <div className="pt-2 text-xs text-[color:var(--muted)]">
+        * Receita exibida nos cards principais (concluídos)
+      </div>
     </div>
   );
 }
 
 export default function GerentePage() {
   const [barracaId, setBarracaId] = useState<string | null>(null);
-  const [range, setRange] = useState<"today" | "24h">("today");
+  const [range, setRange] = useState<Range>("today");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Metrics | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -143,9 +179,15 @@ export default function GerentePage() {
 
   const peakLabel = useMemo(() => {
     if (!data) return "—";
-    const h = String(data.peak.hour).padStart(2, "0");
-    return `${h}h (${data.peak.count})`;
-  }, [data]);
+    if (range === "7d") return `${data.peakDay.date} (${data.peakDay.count})`;
+    return `${String(data.peakHour.hour).padStart(2, "0")}h (${data.peakHour.count})`;
+  }, [data, range]);
+
+  function downloadCSV() {
+    if (!barracaId) return;
+    const url = `/api/app/gerente/export?barraca_id=${encodeURIComponent(barracaId)}&range=${range}`;
+    window.open(url, "_blank");
+  }
 
   if (!barracaId) {
     return (
@@ -162,14 +204,19 @@ export default function GerentePage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">Painel do Dono</div>
+          <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">
+            Painel do Dono
+          </div>
           <div className="mt-1 text-sm text-[color:var(--text-2)]">
             Métricas (TEST) • Atualiza a cada 30s
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Segmented value={range} onChange={setRange} />
+          <button onClick={downloadCSV} className="wavie-btn">
+            Baixar CSV
+          </button>
           <a href={`/app/barraca/${barracaId}`} className="wavie-btn">
             Voltar à operação
           </a>
@@ -188,8 +235,12 @@ export default function GerentePage() {
       ) : (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Stat label="Pedidos" value={String(data.pedidosHoje)} />
-            <Stat label="Faturamento" value={formatMoneyBRL(data.faturamentoHoje)} hint="Somente pronto/entregue" />
+            <Stat label="Pedidos" value={String(data.pedidos)} />
+            <Stat
+              label="Faturamento"
+              value={formatMoneyBRL(data.faturamento)}
+              hint="Somente pronto/entregue"
+            />
             <Stat label="Ticket médio" value={formatMoneyBRL(data.ticketMedio)} />
             <Stat
               label="Tempo médio (proxy)"
@@ -201,10 +252,13 @@ export default function GerentePage() {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="wavie-card p-5">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-semibold text-[color:var(--text)]">SLA (10/20min)</div>
+                <div className="text-sm font-semibold text-[color:var(--text)]">
+                  SLA (10/20min)
+                </div>
                 {data.slaPct ? (
                   <div className="text-xs text-[color:var(--muted)]">
-                    {data.slaPct.green}% verde • {data.slaPct.yellow}% amarelo • {data.slaPct.red}% vermelho
+                    {data.slaPct.green}% verde • {data.slaPct.yellow}% amarelo • {data.slaPct.red}%
+                    vermelho
                   </div>
                 ) : null}
               </div>
@@ -223,12 +277,15 @@ export default function GerentePage() {
             </div>
 
             <div className="wavie-card p-5">
-              <div className="text-sm font-semibold text-[color:var(--text)]">Pico</div>
+              <div className="text-sm font-semibold text-[color:var(--text)]">
+                {range === "7d" ? "Pico (7 dias)" : "Pico (por hora)"}
+              </div>
               <div className="mt-2 text-sm text-[color:var(--text-2)]">
-                Horário com mais pedidos: <span className="font-semibold text-[color:var(--text)]">{peakLabel}</span>
+                Destaque:{" "}
+                <span className="font-semibold text-[color:var(--text)]">{peakLabel}</span>
               </div>
 
-              <HourBar data={data.pedidosPorHora} />
+              {range === "7d" ? <DayBars data={data.days} /> : <HourBars data={data.pedidosPorHora} />}
             </div>
           </div>
 
@@ -258,7 +315,9 @@ export default function GerentePage() {
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-[color:var(--text)]">
                           #{p.id.slice(0, 6).toUpperCase()}{" "}
-                          <span className="text-xs font-medium text-[color:var(--muted)]">{p.status}</span>
+                          <span className="text-xs font-medium text-[color:var(--muted)]">
+                            {p.status}
+                          </span>
                         </div>
                         <div className="mt-1 text-xs text-[color:var(--muted)]">
                           {new Date(p.created_at).toLocaleString("pt-BR")} • Local: {p.local ?? "—"}
