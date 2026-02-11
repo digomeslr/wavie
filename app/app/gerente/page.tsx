@@ -3,22 +3,19 @@
 import { useEffect, useMemo, useState } from "react";
 
 function resolveBarracaId(): string | null {
-  if (typeof window === "undefined") return null;
-
-  const url = new URL(window.location.href);
-  const q = url.searchParams.get("barraca_id");
-  if (q && q.length >= 8) return q;
-
-  const parts = url.pathname.split("/").filter(Boolean);
-  const idxBarraca = parts.indexOf("barraca");
-  if (idxBarraca >= 0 && parts[idxBarraca + 1]) return parts[idxBarraca + 1];
-
-  const idxApp = parts.indexOf("app");
-  if (idxApp >= 0 && parts[idxApp + 1]) return parts[idxApp + 1];
-
-  return null;
-}
-
+    if (typeof window === "undefined") return null;
+  
+    const url = new URL(window.location.href);
+    const q = url.searchParams.get("barraca_id");
+  
+    // só aceita UUID válido (formato simples)
+    if (q && /^[0-9a-fA-F-]{36}$/.test(q)) {
+      return q;
+    }
+  
+    return null;
+  }
+  
 function formatMoneyBRL(v: number | null | undefined) {
   if (v == null) return "—";
   try {
