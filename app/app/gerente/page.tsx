@@ -3,19 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 function resolveBarracaId(): string | null {
-    if (typeof window === "undefined") return null;
-  
-    const url = new URL(window.location.href);
-    const q = url.searchParams.get("barraca_id");
-  
-    // só aceita UUID válido (formato simples)
-    if (q && /^[0-9a-fA-F-]{36}$/.test(q)) {
-      return q;
-    }
-  
-    return null;
-  }
-  
+  if (typeof window === "undefined") return null;
+  const url = new URL(window.location.href);
+  const q = url.searchParams.get("barraca_id");
+  if (q && /^[0-9a-fA-F-]{36}$/.test(q)) return q;
+  return null;
+}
+
 function formatMoneyBRL(v: number | null | undefined) {
   if (v == null) return "—";
   try {
@@ -26,6 +20,9 @@ function formatMoneyBRL(v: number | null | undefined) {
 }
 
 type Metrics = {
+  range: "today" | "24h";
+  since: string;
+
   pedidosHoje: number;
   faturamentoHoje: number;
   ticketMedio: number | null;
@@ -74,8 +71,40 @@ function HourBar({ data }: { data: Array<{ hour: number; count: number }> }) {
   );
 }
 
+function Segmented({
+  value,
+  onChange,
+}: {
+  value: "today" | "24h";
+  onChange: (v: "today" | "24h") => void;
+}) {
+  return (
+    <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
+      <button
+        onClick={() => onChange("today")}
+        className={[
+          "rounded-lg px-3 py-2 text-xs font-semibold",
+          value === "today" ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5",
+        ].join(" ")}
+      >
+        Hoje
+      </button>
+      <button
+        onClick={() => onChange("24h")}
+        className={[
+          "rounded-lg px-3 py-2 text-xs font-semibold",
+          value === "24h" ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5",
+        ].join(" ")}
+      >
+        Últimas 24h
+      </button>
+    </div>
+  );
+}
+
 export default function GerentePage() {
   const [barracaId, setBarracaId] = useState<string | null>(null);
+  const [range, setRange] = useState<"today" | "24h">("today");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Metrics | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -89,9 +118,10 @@ export default function GerentePage() {
     setErr(null);
     setLoading(true);
     try {
-      const res = await fetch(`/api/app/gerente/metrics?barraca_id=${encodeURIComponent(barracaId)}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/app/gerente/metrics?barraca_id=${encodeURIComponent(barracaId)}&range=${range}`,
+        { cache: "no-store" }
+      );
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Erro ao carregar métricas");
       setData(json?.data ?? null);
@@ -109,7 +139,7 @@ export default function GerentePage() {
     const t = window.setInterval(load, 30000);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [barracaId]);
+  }, [barracaId, range]);
 
   const peakLabel = useMemo(() => {
     if (!data) return "—";
@@ -122,7 +152,7 @@ export default function GerentePage() {
       <div className="wavie-card p-6">
         <div className="text-sm font-semibold text-[color:var(--text)]">Painel do Dono</div>
         <div className="mt-2 text-sm text-[color:var(--text-2)]">
-          Acesse com <span className="font-semibold">/app/gerente?barraca_id=SEU_UUID</span>
+          Abra com: <span className="font-semibold">/app/gerente?barraca_id=SEU_UUID</span>
         </div>
       </div>
     );
@@ -130,17 +160,20 @@ export default function GerentePage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">Painel do Dono</div>
           <div className="mt-1 text-sm text-[color:var(--text-2)]">
-            Métricas do dia (TEST) • Atualiza a cada 30s
+            Métricas (TEST) • Atualiza a cada 30s
           </div>
         </div>
 
-        <a href={`/app/barraca/${barracaId}`} className="wavie-btn">
-          Voltar à operação
-        </a>
+        <div className="flex items-center gap-3">
+          <Segmented value={range} onChange={setRange} />
+          <a href={`/app/barraca/${barracaId}`} className="wavie-btn">
+            Voltar à operação
+          </a>
+        </div>
       </div>
 
       {loading ? (
@@ -155,13 +188,13 @@ export default function GerentePage() {
       ) : (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Stat label="Pedidos hoje" value={String(data.pedidosHoje)} />
-            <Stat label="Faturamento hoje" value={formatMoneyBRL(data.faturamentoHoje)} />
+            <Stat label="Pedidos" value={String(data.pedidosHoje)} />
+            <Stat label="Faturamento" value={formatMoneyBRL(data.faturamentoHoje)} hint="Somente pronto/entregue" />
             <Stat label="Ticket médio" value={formatMoneyBRL(data.ticketMedio)} />
             <Stat
               label="Tempo médio (proxy)"
               value={data.avgPrepMins != null ? `${data.avgPrepMins} min` : "—"}
-              hint="Pedidos prontos/entregues: agora − created_at"
+              hint="Concluídos: agora − created_at"
             />
           </div>
 
@@ -190,7 +223,7 @@ export default function GerentePage() {
             </div>
 
             <div className="wavie-card p-5">
-              <div className="text-sm font-semibold text-[color:var(--text)]">Pico do dia</div>
+              <div className="text-sm font-semibold text-[color:var(--text)]">Pico</div>
               <div className="mt-2 text-sm text-[color:var(--text-2)]">
                 Horário com mais pedidos: <span className="font-semibold text-[color:var(--text)]">{peakLabel}</span>
               </div>
@@ -201,10 +234,10 @@ export default function GerentePage() {
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="wavie-card p-5">
-              <div className="text-sm font-semibold text-[color:var(--text)]">Top produtos (hoje)</div>
+              <div className="text-sm font-semibold text-[color:var(--text)]">Top produtos</div>
               <div className="mt-3 space-y-2 text-sm">
                 {data.topProdutos.length === 0 ? (
-                  <div className="text-sm text-[color:var(--text-2)]">Sem itens ainda.</div>
+                  <div className="text-sm text-[color:var(--text-2)]">Sem itens no período.</div>
                 ) : (
                   data.topProdutos.map((p, i) => (
                     <div key={i} className="flex items-center justify-between gap-3">
