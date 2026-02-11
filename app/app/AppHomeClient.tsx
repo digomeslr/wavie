@@ -130,6 +130,21 @@ function Pill({ tone, children }: { tone: Tone; children: ReactNode }) {
   );
 }
 
+function MiniBadge({ children, tone }: { children: ReactNode; tone: "neutral" | "warn" | "busy" }) {
+  const cls =
+    tone === "warn"
+      ? "border-amber-400/25 bg-amber-400/10 text-amber-200"
+      : tone === "busy"
+      ? "border-sky-400/25 bg-sky-400/10 text-sky-200"
+      : "border-white/10 bg-white/6 text-white/70";
+
+  return (
+    <span className={["inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold", cls].join(" ")}>
+      {children}
+    </span>
+  );
+}
+
 function ActionButton({
   tone,
   label,
@@ -241,8 +256,7 @@ function minutesSince(createdAt: string) {
 /** PRO++: SLA 10/20min */
 function SLABadge({ mins, tone }: { mins: number; tone: Tone }) {
   const t = toneClasses(tone);
-  const cls =
-    mins >= 20 ? t.slaBad : mins >= 10 ? t.slaWarn : t.slaGood;
+  const cls = mins >= 20 ? t.slaBad : mins >= 10 ? t.slaWarn : t.slaGood;
 
   return (
     <span
@@ -275,12 +289,7 @@ function Toggle({
       ].join(" ")}
       aria-pressed={value}
     >
-      <span
-        className={[
-          "h-2.5 w-2.5 rounded-full",
-          value ? "bg-emerald-400" : "bg-white/25",
-        ].join(" ")}
-      />
+      <span className={["h-2.5 w-2.5 rounded-full", value ? "bg-emerald-400" : "bg-white/25"].join(" ")} />
       {label}
     </button>
   );
@@ -313,9 +322,7 @@ function beep(kind: "new" | "ready") {
     o.stop(now + (kind === "new" ? 0.16 : 0.25));
 
     o.onended = () => {
-      try {
-        ctx.close();
-      } catch {}
+      try { ctx.close(); } catch {}
     };
   } catch {}
 }
@@ -327,7 +334,6 @@ function vibrate(pattern: number | number[]) {
 }
 
 function pickPriorityId(rows: PedidoRow[]) {
-  // “Próximo a agir” = o que está há mais tempo esperando (maior mins)
   let bestId: string | null = null;
   let bestMins = -1;
 
@@ -341,20 +347,41 @@ function pickPriorityId(rows: PedidoRow[]) {
   return bestId;
 }
 
+type Toast = { kind: "ok" | "warn"; message: string } | null;
+
+function ToastView({ toast }: { toast: Toast }) {
+  if (!toast) return null;
+
+  const cls =
+    toast.kind === "ok"
+      ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100"
+      : "border-amber-400/25 bg-amber-400/10 text-amber-100";
+
+  return (
+    <div className="pointer-events-none fixed left-1/2 top-3 z-50 -translate-x-1/2">
+      <div className={["rounded-2xl border px-4 py-2 text-sm font-semibold shadow-[0_20px_60px_rgba(0,0,0,0.35)]", cls].join(" ")}>
+        {toast.message}
+      </div>
+    </div>
+  );
+}
+
 function OrderCard({
   p,
   onAdvance,
-  busy,
+  isBusy,
   isNew,
   isPriority,
   priorityKind,
+  isPendingSync,
 }: {
   p: PedidoRow;
   onAdvance: (id: string, current: Tone) => void;
-  busy: boolean;
+  isBusy: boolean;
   isNew: boolean;
   isPriority: boolean;
   priorityKind: "recebido" | "pronto" | null;
+  isPendingSync: boolean;
 }) {
   const status = normalizeStatus(p.status);
   const next = NEXT[status];
@@ -402,6 +429,9 @@ function OrderCard({
             <SLABadge mins={mins} tone={status} />
             <Pill tone={status}>{status}</Pill>
 
+            {isBusy ? <MiniBadge tone="busy">Atualizando…</MiniBadge> : null}
+            {isPendingSync ? <MiniBadge tone="warn">⚠ pendente</MiniBadge> : null}
+
             {isPriority && priorityKind === "pronto" ? (
               <span className="text-[11px] font-semibold text-emerald-200/90">
                 ⚡ entregar agora
@@ -433,7 +463,7 @@ function OrderCard({
           tone={status}
           label={buttonLabel}
           onClick={() => onAdvance(p.id, status)}
-          disabled={busy}
+          disabled={isBusy}
         />
       ) : null}
     </div>
@@ -443,7 +473,13 @@ function OrderCard({
 export default function AppHomeClient() {
   const [barracaId, setBarracaId] = useState<string | null>(null);
   const [pedidos, setPedidos] = useState<PedidoRow[]>([]);
-  const [busyId, setBusyId] = useState<string | null>(null);
+
+  // busy por pedido (anti double click real)
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+
+  // pendências de sync (fail-safe)
+  const pendingNextRef = useRef<Map<string, Tone>>(new Map());
+  const [pendingSyncIds, setPendingSyncIds] = useState<Set<string>>(new Set());
 
   // PRO: alertas
   const [alertsEnabled, setAlertsEnabled] = useState(false);
@@ -454,11 +490,21 @@ export default function AppHomeClient() {
   // PRO++: foco
   const [focusMode, setFocusMode] = useState(false);
 
+  // Toast
+  const [toast, setToast] = useState<Toast>(null);
+  const toastTimer = useRef<number | null>(null);
+
   const stopPollingRef = useRef(false);
   const lastHash = useRef("");
   const seenIdsRef = useRef<Set<string>>(new Set());
   const prevStatusRef = useRef<Map<string, Tone>>(new Map());
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
+
+  function showToast(kind: "ok" | "warn", message: string) {
+    setToast({ kind, message });
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2200);
+  }
 
   useEffect(() => {
     setBarracaId(resolveBarracaId());
@@ -474,6 +520,7 @@ export default function AppHomeClient() {
     return () => {
       window.removeEventListener("popstate", onPop);
       document.removeEventListener("visibilitychange", onVis);
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
     };
   }, []);
 
@@ -531,6 +578,76 @@ export default function AppHomeClient() {
     }
   }
 
+  function setBusy(id: string, v: boolean) {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (v) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function markPending(id: string, desired: Tone | null) {
+    const map = pendingNextRef.current;
+    if (desired) map.set(id, desired);
+    else map.delete(id);
+
+    setPendingSyncIds(() => new Set(map.keys()));
+  }
+
+  async function patchStatus(id: string, next: Tone): Promise<{ ok: boolean; error?: string; data?: any }> {
+    try {
+      const res = await fetch(`/api/app/pedidos/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ next_status: next }),
+      });
+      const json = await res.json();
+      if (!res.ok) return { ok: false, error: json?.error ?? "Erro ao atualizar status" };
+      return { ok: true, data: json?.data };
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? "Erro de rede" };
+    }
+  }
+
+  // Retry automático (limitado) para pendências
+  async function flushPendingFromSnapshot(snapshot: PedidoRow[]) {
+    const map = pendingNextRef.current;
+    if (map.size === 0) return;
+
+    let attempts = 0;
+    const maxAttempts = 2; // por ciclo (seguro)
+
+    for (const [id, desired] of map.entries()) {
+      if (attempts >= maxAttempts) break;
+
+      const p = snapshot.find((x) => x.id === id);
+      if (!p) {
+        // pedido sumiu do snapshot (muito raro) → remove pendência
+        map.delete(id);
+        continue;
+      }
+
+      const current = normalizeStatus(p.status);
+      if (current === desired) {
+        // já sincronizou (talvez por outro device) → limpa
+        map.delete(id);
+        continue;
+      }
+
+      attempts++;
+
+      const r = await patchStatus(id, desired);
+      if (r.ok) {
+        map.delete(id);
+      } else {
+        // mantém pendente (sem spam de alert)
+      }
+    }
+
+    setPendingSyncIds(() => new Set(map.keys()));
+  }
+
   async function load() {
     if (!barracaId) return;
 
@@ -540,6 +657,10 @@ export default function AppHomeClient() {
     );
     const json = await res.json();
     const next = (json?.data ?? []) as PedidoRow[];
+
+    // tenta resolver pendências (sem travar o UI)
+    // (não bloqueia o render final, mas mantém consistência)
+    await flushPendingFromSnapshot(next);
 
     markNewAndTransitions(next);
 
@@ -566,36 +687,43 @@ export default function AppHomeClient() {
     const next = NEXT[current];
     if (!next) return;
 
-    setBusyId(id);
+    // anti double click por pedido
+    if (busyIds.has(id)) return;
 
+    setBusy(id, true);
+
+    // otimista + marca pendência (fail-safe)
+    markPending(id, next);
     setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: next } : p)));
 
-    try {
-      const res = await fetch(`/api/app/pedidos/${id}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ next_status: next }),
-      });
+    const r = await patchStatus(id, next);
 
-      const json = await res.json();
-
-      if (!res.ok) {
-        setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
-        alert(json?.error ?? "Erro ao atualizar status");
-      } else {
-        const updated = json?.data as PedidoRow;
-        if (updated?.id) {
-          setPedidos((prev) =>
-            prev.map((p) => (p.id === id ? { ...p, status: updated.status } : p))
-          );
-        }
-      }
-    } catch (e: any) {
-      setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: current } : p)));
-      alert(e?.message ?? "Erro de rede");
-    } finally {
-      setBusyId(null);
+    if (!r.ok) {
+      // mantém pendente (badge), mas dá feedback claro
+      showToast("warn", `Não sincronizou agora. Pedido ficou como pendente (${next}).`);
+      setBusy(id, false);
+      return;
     }
+
+    // sucesso: limpa pendência + atualiza com retorno (se vier)
+    markPending(id, null);
+
+    const updated = r.data as PedidoRow | undefined;
+    if (updated?.id) {
+      setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, status: updated.status } : p)));
+    }
+
+    // toast de confirmação
+    const msg =
+      next === "preparando"
+        ? "Pedido iniciado (preparando)."
+        : next === "pronto"
+        ? "Pedido marcado como PRONTO."
+        : "Pedido marcado como ENTREGUE.";
+
+    showToast("ok", msg);
+
+    setBusy(id, false);
   }
 
   const grouped = useMemo(() => {
@@ -612,7 +740,7 @@ export default function AppHomeClient() {
       else rec.push(p);
     }
 
-    // (display) mais recentes primeiro
+    // display: mais recentes primeiro
     const sortByNew = (a: PedidoRow, b: PedidoRow) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
@@ -629,7 +757,6 @@ export default function AppHomeClient() {
     return grouped.entregue.slice(0, 5);
   }, [grouped.entregue, showAllDelivered]);
 
-  // PRO++: prioridade por tempo (o mais “velho”)
   const priorityRecebidoId = useMemo(() => pickPriorityId(grouped.recebido), [grouped.recebido]);
   const priorityProntoId = useMemo(() => pickPriorityId(grouped.pronto), [grouped.pronto]);
 
@@ -646,13 +773,11 @@ export default function AppHomeClient() {
     title,
     items,
     compactFooter,
-    hideEmptyHint,
   }: {
     tone: Tone;
     title: string;
     items: PedidoRow[];
     compactFooter?: ReactNode;
-    hideEmptyHint?: boolean;
   }) => {
     const t = toneClasses(tone);
 
@@ -665,11 +790,9 @@ export default function AppHomeClient() {
 
         <div className="space-y-3">
           {items.length === 0 ? (
-            hideEmptyHint ? null : (
-              <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
-                Sem pedidos aqui ainda.
-              </div>
-            )
+            <div className="wavie-card-soft p-4 text-xs text-[color:var(--muted)]">
+              Sem pedidos aqui ainda.
+            </div>
           ) : (
             items.map((p) => {
               const s = normalizeStatus(p.status);
@@ -690,10 +813,11 @@ export default function AppHomeClient() {
                   key={p.id}
                   p={p}
                   onAdvance={advanceStatus}
-                  busy={busyId === p.id}
+                  isBusy={busyIds.has(p.id)}
                   isNew={newIds.has(p.id)}
                   isPriority={!!isPriority}
                   priorityKind={priorityKind}
+                  isPendingSync={pendingSyncIds.has(p.id)}
                 />
               );
             })
@@ -706,60 +830,99 @@ export default function AppHomeClient() {
   };
 
   return (
-    <div className="space-y-4">
-      {/* Barra de controles */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-white/50">
-          Atualiza a cada <span className="text-white/80 font-semibold">20s</span> •
-          Prioridade automática: <span className="text-white/80 font-semibold">Pronto</span> e{" "}
-          <span className="text-white/80 font-semibold">Recebido</span>.
+    <>
+      <ToastView toast={toast} />
+
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs text-white/50">
+            Atualiza a cada <span className="text-white/80 font-semibold">20s</span> •
+            Se houver falha de rede, o pedido fica <span className="text-white/80 font-semibold">pendente</span> e sincroniza depois.
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Toggle label="Modo foco" value={focusMode} onChange={setFocusMode} />
+            <Toggle
+              label="Som/Vibração"
+              value={alertsEnabled}
+              onChange={(v) => {
+                setAlertsEnabled(v);
+                if (v) beep("new");
+              }}
+            />
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Toggle label="Modo foco" value={focusMode} onChange={setFocusMode} />
-          <Toggle
-            label="Som/Vibração"
-            value={alertsEnabled}
-            onChange={(v) => {
-              setAlertsEnabled(v);
-              if (v) beep("new");
-            }}
-          />
-        </div>
-      </div>
+        {/* MOBILE/TABLET */}
+        <div className="lg:hidden">
+          <div className="sticky top-2 z-20">
+            <Column tone="pronto" title="Pronto" items={grouped.pronto} />
+          </div>
 
-      {/* MOBILE/TABLET */}
-      <div className="lg:hidden">
-        <div className="sticky top-2 z-20">
-          <Column tone="pronto" title="Pronto" items={grouped.pronto} />
-        </div>
+          <div className="mt-4 space-y-4">
+            {focusMode ? (
+              <>
+                <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+                <Column
+                  tone="recebido"
+                  title="Recebido"
+                  items={grouped.recebido.slice(0, 3)}
+                  compactFooter={
+                    grouped.recebido.length > 3 ? (
+                      <div className="text-xs text-white/45">
+                        + {grouped.recebido.length - 3} recebidos (modo foco)
+                      </div>
+                    ) : null
+                  }
+                />
+              </>
+            ) : (
+              <>
+                <Column tone="recebido" title="Recebido" items={grouped.recebido} />
+                <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+              </>
+            )}
 
-        <div className="mt-4 space-y-4">
-          {/* foco: preparar logo após pronto */}
-          {focusMode ? (
-            <>
-              <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+            {!focusMode ? (
               <Column
-                tone="recebido"
-                title="Recebido"
-                items={grouped.recebido.slice(0, 3)}
+                tone="entregue"
+                title="Entregue"
+                items={deliveredToShow}
                 compactFooter={
-                  grouped.recebido.length > 3 ? (
-                    <div className="text-xs text-white/45">
-                      + {grouped.recebido.length - 3} recebidos (modo foco)
-                    </div>
+                  grouped.entregue.length > 5 ? (
+                    <button
+                      onClick={() => setShowAllDelivered((v) => !v)}
+                      className="w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:border-white/20"
+                    >
+                      {showAllDelivered ? "Ver menos" : `Ver mais (${grouped.entregue.length - 5})`}
+                    </button>
                   ) : null
                 }
               />
-            </>
-          ) : (
-            <>
-              <Column tone="recebido" title="Recebido" items={grouped.recebido} />
-              <Column tone="preparando" title="Preparando" items={grouped.preparando} />
-            </>
-          )}
+            ) : null}
+          </div>
+        </div>
 
-          {/* foco: esconde entregue */}
+        {/* DESKTOP */}
+        <div className={["hidden lg:grid lg:gap-4", focusMode ? "lg:grid-cols-3" : "lg:grid-cols-4"].join(" ")}>
+          <div className={focusMode ? "lg:col-span-1" : ""}>
+            <Column
+              tone="recebido"
+              title="Recebido"
+              items={focusMode ? grouped.recebido.slice(0, 3) : grouped.recebido}
+              compactFooter={
+                focusMode && grouped.recebido.length > 3 ? (
+                  <div className="text-xs text-white/45">
+                    + {grouped.recebido.length - 3} recebidos (modo foco)
+                  </div>
+                ) : null
+              }
+            />
+          </div>
+
+          <Column tone="preparando" title="Preparando" items={grouped.preparando} />
+          <Column tone="pronto" title="Pronto" items={grouped.pronto} />
+
           {!focusMode ? (
             <Column
               tone="entregue"
@@ -779,52 +942,6 @@ export default function AppHomeClient() {
           ) : null}
         </div>
       </div>
-
-      {/* DESKTOP */}
-      <div
-        className={[
-          "hidden lg:grid lg:gap-4",
-          focusMode ? "lg:grid-cols-3" : "lg:grid-cols-4",
-        ].join(" ")}
-      >
-        {/* foco: Recebido compacta (menos espaço / menos cards) */}
-        <div className={focusMode ? "lg:col-span-1" : ""}>
-          <Column
-            tone="recebido"
-            title="Recebido"
-            items={focusMode ? grouped.recebido.slice(0, 3) : grouped.recebido}
-            compactFooter={
-              focusMode && grouped.recebido.length > 3 ? (
-                <div className="text-xs text-white/45">
-                  + {grouped.recebido.length - 3} recebidos (modo foco)
-                </div>
-              ) : null
-            }
-          />
-        </div>
-
-        {/* foco: dá mais “atenção” ao meio (visualmente mais importante já é pronto sticky / ring) */}
-        <Column tone="preparando" title="Preparando" items={grouped.preparando} />
-        <Column tone="pronto" title="Pronto" items={grouped.pronto} />
-
-        {!focusMode ? (
-          <Column
-            tone="entregue"
-            title="Entregue"
-            items={deliveredToShow}
-            compactFooter={
-              grouped.entregue.length > 5 ? (
-                <button
-                  onClick={() => setShowAllDelivered((v) => !v)}
-                  className="w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:border-white/20"
-                >
-                  {showAllDelivered ? "Ver menos" : `Ver mais (${grouped.entregue.length - 5})`}
-                </button>
-              ) : null
-            }
-          />
-        ) : null}
-      </div>
-    </div>
+    </>
   );
 }
