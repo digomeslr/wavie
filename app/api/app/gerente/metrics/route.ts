@@ -7,10 +7,21 @@ type SLAStats = {
   red: number; // >=20m
 };
 
+type HourBucket = { hour: number; count: number };
+
 function startOfDayISO() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d.toISOString();
+}
+
+function clampInt(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function hourLocalFromISO(iso: string) {
+  const dt = new Date(iso);
+  return clampInt(dt.getHours(), 0, 23);
 }
 
 export async function GET(req: Request) {
@@ -25,31 +36,73 @@ export async function GET(req: Request) {
 
     const since = startOfDayISO();
 
+    // 1) pedidos do dia
     const { data: pedidos, error: pErr } = await supabase
       .from("pedidos")
       .select("id,total,status,created_at,local,barraca_id")
       .eq("barraca_id", barraca_id)
       .gte("created_at", since)
       .order("created_at", { ascending: false })
-      .limit(200);
+      .limit(500);
 
     if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
 
-    const rows = pedidos ?? [];
+    const rows = (pedidos ?? []) as any[];
     const pedidosHoje = rows.length;
-    const faturamentoHoje = rows.reduce((acc, p: any) => acc + Number(p.total ?? 0), 0);
+    const faturamentoHoje = rows.reduce((acc, p) => acc + Number(p.total ?? 0), 0);
     const ticketMedio = pedidosHoje > 0 ? faturamentoHoje / pedidosHoje : null;
 
+    // 2) SLA (10/20) baseado em now - created_at
     const sla: SLAStats = { green: 0, yellow: 0, red: 0 };
-    const now = Date.now();
-    for (const p of rows as any[]) {
-      const mins = Math.max(0, Math.floor((now - new Date(p.created_at).getTime()) / 60000));
+    const nowMs = Date.now();
+
+    for (const p of rows) {
+      const mins = Math.max(0, Math.floor((nowMs - new Date(p.created_at).getTime()) / 60000));
       if (mins < 10) sla.green += 1;
       else if (mins < 20) sla.yellow += 1;
       else sla.red += 1;
     }
 
-    const pedidoIds = rows.map((p: any) => p.id);
+    const totalSla = sla.green + sla.yellow + sla.red;
+    const slaPct =
+      totalSla === 0
+        ? null
+        : {
+            green: Math.round((sla.green / totalSla) * 100),
+            yellow: Math.round((sla.yellow / totalSla) * 100),
+            red: Math.round((sla.red / totalSla) * 100),
+          };
+
+    // 3) Pico por hora (hoje) — buckets 0..23
+    const buckets = new Array<number>(24).fill(0);
+    for (const p of rows) {
+      const h = hourLocalFromISO(p.created_at);
+      buckets[h] += 1;
+    }
+    const pedidosPorHora: HourBucket[] = buckets.map((count, hour) => ({ hour, count }));
+    const peak = pedidosPorHora.reduce(
+      (best, cur) => (cur.count > best.count ? cur : best),
+      { hour: 0, count: 0 }
+    );
+
+    // 4) Tempo médio de preparo (proxy): média de (now - created_at) para pedidos concluídos
+    // (sem *_at, é o melhor que dá agora — depois trocamos por timestamps reais)
+    const done = rows.filter((p) => {
+      const s = String(p.status ?? "").toLowerCase().trim();
+      return s === "pronto" || s === "entregue" || s === "finalizado";
+    });
+
+    let avgPrepMins: number | null = null;
+    if (done.length > 0) {
+      const sum = done.reduce((acc, p) => {
+        const mins = Math.max(0, Math.floor((nowMs - new Date(p.created_at).getTime()) / 60000));
+        return acc + mins;
+      }, 0);
+      avgPrepMins = Math.round(sum / done.length);
+    }
+
+    // 5) Top produtos (hoje)
+    const pedidoIds = rows.map((p) => p.id);
     let topProdutos: Array<{ name: string; qty: number }> = [];
 
     if (pedidoIds.length) {
@@ -79,7 +132,15 @@ export async function GET(req: Request) {
           pedidosHoje,
           faturamentoHoje,
           ticketMedio,
+
           sla,
+          slaPct,
+
+          pedidosPorHora,
+          peak,
+
+          avgPrepMins,
+
           topProdutos,
           ultimosPedidos: rows.slice(0, 12),
         },

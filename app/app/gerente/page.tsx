@@ -32,16 +32,47 @@ type Metrics = {
   pedidosHoje: number;
   faturamentoHoje: number;
   ticketMedio: number | null;
+
   sla: { green: number; yellow: number; red: number };
+  slaPct: { green: number; yellow: number; red: number } | null;
+
+  pedidosPorHora: Array<{ hour: number; count: number }>;
+  peak: { hour: number; count: number };
+
+  avgPrepMins: number | null;
+
   topProdutos: Array<{ name: string; qty: number }>;
   ultimosPedidos: Array<{ id: string; total: number | null; status: string; created_at: string; local: string | null }>;
 };
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="wavie-card p-4">
       <div className="text-xs text-[color:var(--text-2)]">{label}</div>
       <div className="mt-2 text-2xl font-semibold tracking-tight text-[color:var(--text)]">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-[color:var(--muted)]">{hint}</div> : null}
+    </div>
+  );
+}
+
+function HourBar({ data }: { data: Array<{ hour: number; count: number }> }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div className="mt-3 space-y-2">
+      {data.map((d) => {
+        const pct = Math.round((d.count / max) * 100);
+        return (
+          <div key={d.hour} className="flex items-center gap-3">
+            <div className="w-10 text-xs text-[color:var(--muted)]">{String(d.hour).padStart(2, "0")}h</div>
+            <div className="flex-1">
+              <div className="h-2 w-full rounded-full bg-white/5">
+                <div className="h-2 rounded-full bg-white/20" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+            <div className="w-10 text-right text-xs font-semibold text-[color:var(--text-2)]">{d.count}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -83,15 +114,10 @@ export default function GerentePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [barracaId]);
 
-  const slaPct = useMemo(() => {
-    if (!data) return null;
-    const total = data.sla.green + data.sla.yellow + data.sla.red;
-    if (total === 0) return null;
-    return {
-      green: Math.round((data.sla.green / total) * 100),
-      yellow: Math.round((data.sla.yellow / total) * 100),
-      red: Math.round((data.sla.red / total) * 100),
-    };
+  const peakLabel = useMemo(() => {
+    if (!data) return "—";
+    const h = String(data.peak.hour).padStart(2, "0");
+    return `${h}h (${data.peak.count})`;
   }, [data]);
 
   if (!barracaId) {
@@ -111,7 +137,7 @@ export default function GerentePage() {
         <div>
           <div className="text-xl font-semibold tracking-tight text-[color:var(--text)]">Painel do Dono</div>
           <div className="mt-1 text-sm text-[color:var(--text-2)]">
-            Métricas do dia (ambiente TEST) • Atualiza a cada 30s
+            Métricas do dia (TEST) • Atualiza a cada 30s
           </div>
         </div>
 
@@ -136,15 +162,24 @@ export default function GerentePage() {
             <Stat label="Faturamento hoje" value={formatMoneyBRL(data.faturamentoHoje)} />
             <Stat label="Ticket médio" value={formatMoneyBRL(data.ticketMedio)} />
             <Stat
-              label="SLA verde"
-              value={slaPct ? `${slaPct.green}%` : "—"}
+              label="Tempo médio (proxy)"
+              value={data.avgPrepMins != null ? `${data.avgPrepMins} min` : "—"}
+              hint="Pedidos prontos/entregues: agora − created_at"
             />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="wavie-card p-5">
-              <div className="text-sm font-semibold text-[color:var(--text)]">SLA (10/20min)</div>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-[color:var(--text)]">SLA (10/20min)</div>
+                {data.slaPct ? (
+                  <div className="text-xs text-[color:var(--muted)]">
+                    {data.slaPct.green}% verde • {data.slaPct.yellow}% amarelo • {data.slaPct.red}% vermelho
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-emerald-200">
                   Verde: {data.sla.green}
                 </span>
@@ -155,13 +190,19 @@ export default function GerentePage() {
                   Vermelho: {data.sla.red}
                 </span>
               </div>
-              {slaPct ? (
-                <div className="mt-3 text-xs text-[color:var(--muted)]">
-                  Percentual: {slaPct.green}% verde • {slaPct.yellow}% amarelo • {slaPct.red}% vermelho
-                </div>
-              ) : null}
             </div>
 
+            <div className="wavie-card p-5">
+              <div className="text-sm font-semibold text-[color:var(--text)]">Pico do dia</div>
+              <div className="mt-2 text-sm text-[color:var(--text-2)]">
+                Horário com mais pedidos: <span className="font-semibold text-[color:var(--text)]">{peakLabel}</span>
+              </div>
+
+              <HourBar data={data.pedidosPorHora} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="wavie-card p-5">
               <div className="text-sm font-semibold text-[color:var(--text)]">Top produtos (hoje)</div>
               <div className="mt-3 space-y-2 text-sm">
@@ -177,29 +218,29 @@ export default function GerentePage() {
                 )}
               </div>
             </div>
-          </div>
 
-          <div className="wavie-card p-5">
-            <div className="text-sm font-semibold text-[color:var(--text)]">Últimos pedidos</div>
-            <div className="mt-3 space-y-2">
-              {data.ultimosPedidos.map((p) => (
-                <div key={p.id} className="wavie-card-soft p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-[color:var(--text)]">
-                        #{p.id.slice(0, 6).toUpperCase()}{" "}
-                        <span className="text-xs font-medium text-[color:var(--muted)]">{p.status}</span>
+            <div className="wavie-card p-5">
+              <div className="text-sm font-semibold text-[color:var(--text)]">Últimos pedidos</div>
+              <div className="mt-3 space-y-2">
+                {data.ultimosPedidos.map((p) => (
+                  <div key={p.id} className="wavie-card-soft p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[color:var(--text)]">
+                          #{p.id.slice(0, 6).toUpperCase()}{" "}
+                          <span className="text-xs font-medium text-[color:var(--muted)]">{p.status}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-[color:var(--muted)]">
+                          {new Date(p.created_at).toLocaleString("pt-BR")} • Local: {p.local ?? "—"}
+                        </div>
                       </div>
-                      <div className="mt-1 text-xs text-[color:var(--muted)]">
-                        {new Date(p.created_at).toLocaleString("pt-BR")} • Local: {p.local ?? "—"}
+                      <div className="shrink-0 text-sm font-semibold text-[color:var(--text)]">
+                        {formatMoneyBRL(p.total)}
                       </div>
-                    </div>
-                    <div className="shrink-0 text-sm font-semibold text-[color:var(--text)]">
-                      {formatMoneyBRL(p.total)}
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </>
