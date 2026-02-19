@@ -862,7 +862,7 @@ export default function AppHomeClient() {
           </div>
           <div className="flex items-center gap-2">
   <LinkButton
-    href={`/app/gerente?barraca_id=${encodeURIComponent(barracaId)}`}
+    href={`/app/barraca/${encodeURIComponent(barracaId)}/gerente`}
     label="Painel do Dono"
   />
 
